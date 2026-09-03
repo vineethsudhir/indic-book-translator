@@ -6,7 +6,9 @@ dependencies = [
     "openai>=1.40",
     "anthropic>=0.40",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
+    # pydantic<2.12: newer versions emit boolean JSON schemas that gradio 4's
+    # API parser cannot read, breaking `scripts/gui.py` at launch.
+    "pydantic>=2.9,<2.12",
     "httpx>=0.27",
     "EbookLib>=0.18",
     "beautifulsoup4>=4.12",
@@ -24,9 +26,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# gradio<5: v6 pulls huggingface-hub v1, which breaks transformers<5
-# (needed by the local TTS path). Keep the GUI dep fenced off.
-gui = ["gradio>=4,<5"]
+# Pinned as a set (verified together): gradio 6 pulls huggingface-hub v1
+# which breaks transformers (local TTS), while newer fastapi/starlette/
+# pydantic break gradio 4's startup health-check. Install with: pip install -e .[gui]
+gui = [
+    "gradio>=4,<5",
+    "huggingface_hub<1.0",
+    "fastapi==0.115.*",
+    "starlette==0.41.*",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

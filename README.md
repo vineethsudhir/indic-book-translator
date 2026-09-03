@@ -35,10 +35,12 @@ python scripts/translate_book.py --limit-chapters item4 --max-paragraphs 2 --bat
 python scripts/translate_book.py  # full book
 ```
 
-Prefer a GUI? `pip install -e .[gui]` then `python scripts/gui.py` —
+Prefer a GUI? `pip install -e .[gui]` then `.venv/bin/python scripts/gui.py` —
 Setup checks, Configure (`book.yaml` editor), Run (live log + progress,
 stop/resume), and Review (side-by-side EN/KN per chapter) tabs over the same
-pipeline. Open http://127.0.0.1:7860.
+pipeline. Open http://127.0.0.1:7860. Use the venv python (system python
+won't have the deps). If the browser can't connect, re-run
+`python scripts/setup.py` — the GUI needs the same models/configs as the CLI.
 
 `setup.py` validates the Python version, installed deps, book + provider
 configs, the EPUB path, the translation model layout, the TTS model, and your
