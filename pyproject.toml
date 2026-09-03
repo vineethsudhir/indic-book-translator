@@ -1,0 +1,27 @@
+[project]
+name = "kannada-epub-translator"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    "EbookLib>=0.18",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "ctranslate2>=4.8",
+    "sentencepiece>=0.2",
+    "IndicTransToolkit>=1.1",
+    "huggingface_hub>=0.25",
+    "torch>=2.0",
+    "transformers>=4.40,<5",
+    "numpy>=1.26",
+    "soundfile>=0.12",
+    "parler_tts>=0.2",
+    "python-dotenv>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

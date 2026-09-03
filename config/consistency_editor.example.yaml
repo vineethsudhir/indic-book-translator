@@ -1,0 +1,31 @@
+# Copy to consistency_editor.yaml and adjust.
+#
+# provider: ollama            -> local Ollama server, no API key needed
+# provider: openai_compatible -> any OpenAI-compatible API (OpenAI, OpenRouter, Together, Groq, ...)
+# provider: anthropic         -> native Anthropic Messages API
+
+consistency_editor:
+  provider: ollama
+  model: gemma4:26b
+  # base_url: http://localhost:11434   # only needed if Ollama isn't on the default port
+  temperature: 0.2
+  max_tokens: 4096
+  think: false   # gemma4 is a reasoning model; keep this off or it can burn the whole
+                 # max_tokens budget on hidden reasoning and return empty output
+
+# --- openai_compatible example ---
+# consistency_editor:
+#   provider: openai_compatible
+#   model: gpt-4.1
+#   base_url: https://api.openai.com/v1
+#   api_key_env: OPENAI_API_KEY
+#   temperature: 0.2
+#   max_tokens: 4096
+
+# --- anthropic example ---
+# consistency_editor:
+#   provider: anthropic
+#   model: claude-sonnet-5
+#   api_key_env: ANTHROPIC_API_KEY
+#   temperature: 0.2
+#   max_tokens: 4096

@@ -1,0 +1,22 @@
+# Copy to book.yaml and adjust.
+# Full-book run: EPUB -> IndicTrans2 draft -> consistency edit -> per-chapter
+# EN/KN JSON outputs (+ resume checkpoints). See scripts/translate_book.py.
+#
+# limit_chapters / max_paragraphs_per_chapter are for cheap smoke runs over
+# one chapter; leave them commented out for a real full-book run.
+
+book:
+  epub_path: data/sherlock_holmes.epub
+  output_dir: data/book_output
+  glossary_db: data/project.glossary.db
+  provider_config: config/consistency_editor.example.yaml
+  ct2_model_dir: models/en-indic-1b-ct2/en-indic-1b-ct2/ctranslate2_model
+  batch_size: 20
+  context_tail_paragraphs: 2
+  tone_register: neutral, standard written Kannada
+  exclude_ids:
+    - pg-header
+    - pg-footer
+    - coverpage-wrapper
+  # limit_chapters: [item4]
+  # max_paragraphs_per_chapter: 20

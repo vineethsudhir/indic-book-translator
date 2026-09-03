@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+!.env.example
+
+# Models (GBs — download after cloning, see README)
+models/
+!.gitkeep
+
+# Run outputs & generated artifacts
+data/book_output/
+data/*.wav
+data/*.pdf
+data/*.db
+data/*.html
+!data/scandal_in_bohemia_proof.html
+data/tts_voices/
+data/*.final.html
+
+# Working configs (examples are tracked, yours are not)
+config/book.yaml
+config/consistency_editor.yaml
+
+# OS / editor / agent state
+.DS_Store
+.vscode/
+.idea/
+.omc/
+.omo/
+.claude/

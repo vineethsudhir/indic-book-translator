@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>A Scandal in Bohemia — Kannada Translation Proof</title>
+<style>
+  @page {
+    size: A4;
+    margin: 24mm 20mm 20mm 20mm;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: #FFFFFF;
+    color: #1A1A17;
+  }
+
+  body {
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    font-size: 11.5pt;
+    line-height: 1.5;
+  }
+
+  .mono {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+  }
+
+  .kn {
+    font-family: "Kohinoor Kannada", "Noto Sans Kannada", "Tunga", sans-serif;
+  }
+
+  /* ---- Cover / instructions block ---- */
+
+  .cover {
+    break-after: page;
+  }
+
+  .cover .kicker {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 9pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #55534B;
+    margin: 0 0 6mm 0;
+  }
+
+  .cover h1 {
+    font-size: 26pt;
+    line-height: 1.15;
+    margin: 0 0 3mm 0;
+    text-wrap: balance;
+    font-weight: 600;
+  }
+
+  .cover .byline {
+    font-size: 12pt;
+    color: #4A4A44;
+    margin: 0 0 14mm 0;
+    font-style: italic;
+  }
+
+  .meta-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12mm;
+    font-size: 10pt;
+  }
+  .meta-table td {
+    padding: 2.5mm 0;
+    border-bottom: 0.4pt solid #DAD8CE;
+    vertical-align: top;
+  }
+  .meta-table td:first-child {
+    width: 42mm;
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    font-size: 8.5pt;
+    color: #6B6A62;
+    padding-top: 3.2mm;
+  }
+
+  .instructions {
+    border: 0.6pt solid #1A1A17;
+    padding: 8mm;
+  }
+  .instructions h2 {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 9.5pt;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 0 0 5mm 0;
+    color: #1A1A17;
+  }
+  .instructions ol {
+    margin: 0;
+    padding-left: 5mm;
+  }
+  .instructions li {
+    margin-bottom: 3.5mm;
+    font-size: 10.5pt;
+    line-height: 1.5;
+  }
+  .instructions li:last-child { margin-bottom: 0; }
+  .instructions .label {
+    font-weight: 600;
+  }
+
+  .legend {
+    margin-top: 8mm;
+    display: flex;
+    gap: 10mm;
+    font-size: 9pt;
+    color: #4A4A44;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 2.5mm;
+  }
+  .legend-swatch {
+    width: 3mm;
+    height: 3mm;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+
+  /* ---- Paragraph blocks ---- */
+
+  .para {
+    margin-bottom: 9mm;
+    padding-bottom: 9mm;
+    border-bottom: 0.4pt solid #E4E2D8;
+  }
+
+  /* Keep each language block intact even if the paragraph itself spans a
+     page break — splitting mid-sentence is fine, splitting EN from its KN
+     is not. */
+  .row, .correction {
+    break-inside: avoid;
+  }
+  .para:last-child { border-bottom: none; }
+
+  .para-number {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 8.5pt;
+    color: #FFFFFF;
+    background: #1A1A17;
+    display: inline-block;
+    padding: 0.8mm 2.2mm;
+    margin-bottom: 3mm;
+    letter-spacing: 0.02em;
+  }
+
+  .row {
+    display: flex;
+    gap: 4mm;
+    margin-bottom: 2.5mm;
+  }
+
+  .row-label {
+    flex: 0 0 11mm;
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 8pt;
+    letter-spacing: 0.04em;
+    color: #6B6A62;
+    padding-top: 0.8mm;
+  }
+
+  /* Distinguished by VALUE and WEIGHT, not hue — this document is meant to
+     be printed and written on, and hue-only distinctions (navy vs. brick
+     red) converge to similarly-dark, hard-to-tell-apart grays on a B&W
+     printer. Muted gray = reference material; solid black = what needs
+     review. That also matches the instructions: read EN for context, judge
+     and correct KN. */
+  .row-en .row-label { color: #8A887E; }
+  .row-kn .row-label { color: #1A1A17; font-weight: 600; }
+
+  .row-text {
+    flex: 1 1 auto;
+    font-size: 11pt;
+    line-height: 1.55;
+  }
+
+  .row-en {
+    border-left: 1.4pt solid #C7C5B8;
+    padding-left: 3.2mm;
+  }
+  .row-en .row-text {
+    color: #6B6A62;
+  }
+
+  .row-kn {
+    border-left: 1.4pt solid #1A1A17;
+    padding-left: 3.2mm;
+    margin-top: 3mm;
+  }
+  .row-kn .row-text {
+    font-size: 12.5pt;
+    color: #1A1A17;
+  }
+
+  .correction {
+    margin-top: 4mm;
+    margin-left: 15mm;
+  }
+  .correction-label {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 7.5pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #A8A69A;
+    margin-bottom: 1.5mm;
+  }
+  .correction-line {
+    border-bottom: 0.4pt dotted #B8B6AA;
+    height: 6.5mm;
+  }
+  .correction-line:last-child { margin-bottom: 0; }
+
+  .footer-note {
+    font-family: "SF Mono", "Menlo", "Consolas", monospace;
+    font-size: 8pt;
+    color: #A8A69A;
+    text-align: center;
+    margin-top: 6mm;
+  }
+</style>
+</head>
+<body>
+
+  <section class="cover">
+    <p class="kicker">Translation proof — for review</p>
+    <h1>A Scandal in Bohemia</h1>
+    <p class="byline">Arthur Conan Doyle (1891) · Kannada draft translation, paragraphs 1–20 of 260</p>
+
+    <table class="meta-table">
+      <tr>
+        <td>Source</td>
+        <td>Public-domain text (Project Gutenberg), opening of the first story in <em>The Adventures of Sherlock Holmes</em>.</td>
+      </tr>
+      <tr>
+        <td>Kannada draft</td>
+        <td>Machine-translated (IndicTrans2, local pipeline) — unedited output. Not yet reviewed by a fluent Kannada speaker.</td>
+      </tr>
+      <tr>
+        <td>What's needed</td>
+        <td>A read-through for fluency, accuracy, terminology, and tone, with corrections written directly on this sheet.</td>
+      </tr>
+    </table>
+
+    <div class="instructions">
+      <h2>How to mark this proof</h2>
+      <ol>
+        <li><span class="label">Read the English line first,</span> then the Kannada line directly below it — the Kannada is what needs checking, the English is there for reference only.</li>
+        <li><span class="label">Write your corrected Kannada</span> in the ruled space under each pair. If the draft is already correct, a checkmark is enough.</li>
+        <li><span class="label">For anything you don't rewrite in full,</span> underline the specific word or phrase and note the issue in the margin — mistranslation, awkward phrasing, wrong register/tone, or inconsistent terminology.</li>
+        <li><span class="label">Reference paragraph numbers</span> (the numbered black tab above each pair) when passing feedback back — not page numbers.</li>
+      </ol>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:#C7C5B8;"></span>English source (reference)</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:#1A1A17;"></span>Kannada draft (needs review)</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="paragraphs">
+    <!--PARAGRAPHS-->
+  </section>
+
+  <p class="footer-note">A Scandal in Bohemia — translation proof — end of sample</p>
+
+</body>
+</html>
