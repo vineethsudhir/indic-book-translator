@@ -23,5 +23,10 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+# gradio<5: v6 pulls huggingface-hub v1, which breaks transformers<5
+# (needed by the local TTS path). Keep the GUI dep fenced off.
+gui = ["gradio>=4,<5"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

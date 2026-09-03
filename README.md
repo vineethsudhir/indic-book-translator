@@ -29,9 +29,16 @@ Sample book included: Project Gutenberg's *Adventures of Sherlock Holmes*
 pip install -e .
 cp config/book.example.yaml config/book.yaml
 cp config/consistency_editor.example.yaml config/consistency_editor.yaml
-cp .env.example .env            # only needed for cloud providers (see below)
+cp .env.example .env            # only needed for cloud providers (below)
 python scripts/setup.py         # checks everything, tells you what to fix
+python scripts/translate_book.py --limit-chapters item4 --max-paragraphs 2 --batch-size 2  # smoke test
+python scripts/translate_book.py  # full book
 ```
+
+Prefer a GUI? `pip install -e .[gui]` then `python scripts/gui.py` —
+Setup checks, Configure (`book.yaml` editor), Run (live log + progress,
+stop/resume), and Review (side-by-side EN/KN per chapter) tabs over the same
+pipeline. Open http://127.0.0.1:7860.
 
 `setup.py` validates the Python version, installed deps, book + provider
 configs, the EPUB path, the translation model layout, the TTS model, and your
@@ -237,6 +244,7 @@ Notes:
 ```
 src/kannada_epub/      pipeline library (extract, translate, glossary, edit, TTS)
 scripts/translate_book.py   main entry point (full book)
+scripts/gui.py            Gradio GUI (needs `pip install -e .[gui]`)
 scripts/build_audiobook.py  sample-span demo: translate + narrate 20 paragraphs
 scripts/setup.py            setup checker (all credentials + models, one place)
 config/*.example.yaml    versioned templates — copy without `.example` to use
