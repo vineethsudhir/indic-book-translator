@@ -99,7 +99,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 #### FR-3.1 Batch Translation Engine
 * Utilize local open-weight Neural Machine Translation (NMT) models optimized for Indic languages (e.g., **IndicTrans2** ~1B via CTranslate2 runtime or **Sarvam-1**).
 * Execute batch inference grouped by block elements (paragraphs, list items, callouts) to maintain contextual coherence.
-* **Implementation status (v2.0): IMPLEMENTED with hardening (normative).** `src/kannada_epub/translation/engine.py::IndicTrans2Engine`:
+* **Implementation status (v2.0): IMPLEMENTED with hardening (normative), v2.1 adds cloud alternative.** `src/kannada_epub/translation/engine.py::IndicTrans2Engine` (local default) plus `translation/cloud.py::OpenAICompatibleTranslationProvider` (any OpenAI-compatible chat endpoint — Sarvam `sarvam-m` recommended for Kannada) behind `translation/base.py::TranslationProvider` and `translation/factory.py`. Cloud path keeps the paragraph-count guarantee (retry once, then refuse rather than misalign). Selected via `book.translation` in `config/book.yaml`; `scripts/setup.py` validates whichever is configured.
   * CTranslate2 over `models/en-indic-1b-ct2`, `device=cpu`, `compute_type=int8`; SentencePiece `model.SRC`/`model.TGT`; `IndicProcessor(inference=True)`.
   * FLORES tags (`eng_Latn`/`kan_Knda`) prepended as raw tokens AFTER SentencePiece (tags shatter into garbage subwords if passed through SP — verified).
   * `translate_paragraphs()` splits paragraphs into sentences first (English regex `(?<=[.!?])\s+`; non-English passed through pending a Kannada segmenter), translates sentence batch, rejoins — matches IndicTrans2 sentence-level training; whole-paragraph blobs degrade quality and truncate content.
@@ -168,6 +168,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 
 ### FR-9: Local TTS Audiobook Synthesis (NEW — implemented)
 * **FR-9.1 Engine:** `src/kannada_epub/tts/engine.py::IndicParlerTTSEngine` wraps `ai4bharat/indic-parler-tts` (`models/indic-parler-tts`), device `mps` if available else `cpu`. Description prompt per chunk: `{voice} speaks in {emotion_phrase} at a moderate pace, close-sounding and high quality, with no background noise.`
+**v2.1 adds cloud alternatives** behind `tts/base.py::TTSProvider` + `tts/factory.py`: `tts/cloud.py::SarvamTTSProvider` (Bulbul `bulbul:v3`, native `kn-IN`, recommended) and `OpenAICompatibleTTSProvider` (`/audio/speech`). Cloud voices ignore the emotion tag (no equivalent parameter). Selected via `book.tts` in `config/book.yaml`.
 * **FR-9.2 Chunking (normative):** Kannada sentence-split on `. ! ? । ॥`, grouped into ≤~200-char chunks — a single `generate()` tops out at ~30s audio (`max_length=2610` codec tokens) and silently truncates beyond it. Intra-paragraph chunks joined with 0.25s gaps; per-chunk peak normalization prevents inter-chunk volume jumps.
 * **FR-9.3 Audiobook assembly:** `src/kannada_epub/audiobook_builder.py::build_audiobook` narrates every `edited_kannada` para with its emotion tag + chosen voice (e.g. `Chetan`), concatenates with 0.6s paragraph gaps into one WAV (`data/scandal_in_bohemia_audiobook.wav`). Scripts: `scripts/build_audiobook.py` (20-para end-to-end), `scripts/download_tts_model.py`, `scripts/test_tts*.py`.
 
@@ -182,7 +183,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 
 | Metric | Specification |
 |---|---|
-| **Privacy & Security** | Local-first. Translation (IndicTrans2/CTranslate2), glossary, TTS, and EPUB parsing run 100% offline with zero data transmission. The consistency-editing pass (FR-7) is provider-pluggable: default `ollama` stays offline; `openai_compatible`/`anthropic` options send draft Kannada + glossary + rolling context to the configured API — operators must opt in explicitly via config + API key. |
+| **Privacy & Security** | Local-first. Translation (IndicTrans2/CTranslate2), glossary, TTS, and EPUB parsing run 100% offline with zero data transmission. The consistency-editing pass (FR-7) is provider-pluggable: default `ollama` stays offline; `openai_compatible`/`anthropic` options send draft Kannada + glossary + rolling context to the configured API — operators must opt in explicitly via config + API key. v2.1 extends the same opt-in model to translation (`book.translation.provider: openai_compatible`) and TTS (`book.tts.provider: sarvam`/`openai_compatible`) for machines that cannot hold local models. |
 | **Performance** | v1.0 target retained: standard 80,000-word book in < 20 minutes on consumer GPUs (Apple Silicon M-series or NVIDIA RTX 3060+) for the translation path. TTS synthesis is slower than translation and scales with audio length — budget separately; current scripts synthesize sample spans, not full books. |
 | **Memory Footprint** | Peak VRAM usage ≤ 6 GB for NMT (quantized 4-bit / 8-bit or CTranslate2 `int8` binaries). TTS (`parler-tts`) runs on MPS/CPU in current implementation. |
 | **Output Integrity** | Zero valid HTML structural errors; valid EPUB schema compliant with standard e-readers (Kindle, Kobo, Apple Books). |

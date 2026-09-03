@@ -20,3 +20,31 @@ book:
     - coverpage-wrapper
   # limit_chapters: [item4]
   # max_paragraphs_per_chapter: 20
+
+  # --- Translation engine: local IndicTrans2 by default (needs ct2_model_dir).
+  # --- Low-end machine? Use cloud instead — no local model needed:
+  # translation:
+  #   provider: openai_compatible
+  #   model: sarvam-m
+  #   base_url: https://api.sarvam.ai/v1
+  #   api_key_env: SARVAM_API_KEY
+  #   temperature: 0.2
+  #   max_tokens: 4096
+
+  # --- TTS engine: local Indic Parler-TTS by default (needs models/indic-parler-tts).
+  # --- Cloud options (no local model needed):
+  # tts:
+  #   provider: sarvam          # Sarvam Bulbul, native Kannada (recommended)
+  #   model: bulbul:v3
+  #   voice: anushka            # lowercase Sarvam speaker name
+  #   language_code: kn-IN
+  #   api_key_env: SARVAM_API_KEY
+  #   sampling_rate: 22050
+  # --- or any OpenAI-compatible /audio/speech endpoint:
+  # tts:
+  #   provider: openai_compatible
+  #   model: tts-1
+  #   voice: alloy
+  #   base_url: https://api.openai.com/v1
+  #   api_key_env: OPENAI_API_KEY
+  #   sampling_rate: 24000

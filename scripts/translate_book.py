@@ -25,7 +25,7 @@ from kannada_epub.consistency_editor import ConsistencyEditor
 from kannada_epub.epub_io import load_epub_chapters
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.providers.factory import build_provider
-from kannada_epub.translation import IndicTrans2Engine
+from kannada_epub.translation import build_translation_provider
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -101,15 +101,12 @@ def main() -> None:
             c.paragraphs = c.paragraphs[:max_paragraphs]
     print(f"Chapters to process: {[(c.id, len(c.paragraphs)) for c in chapters]}")
 
-    ct2_dir = _resolve(cfg.ct2_model_dir)
-    print("Loading IndicTrans2 engine...")
-    engine = IndicTrans2Engine(
-        ct2_model_dir=ct2_dir,
-        spm_src_path=ct2_dir / "vocab" / "model.SRC",
-        spm_tgt_path=ct2_dir / "vocab" / "model.TGT",
-        device="cpu",
-        compute_type="int8",
-    )
+    t = cfg.translation
+    if t.provider == "indictrans2_local":
+        print(f"Translation: local IndicTrans2 ({cfg.ct2_model_dir})")
+    else:
+        print(f"Translation: cloud {t.provider} ({t.model} @ {t.base_url})")
+    engine = build_translation_provider(t, ct2_model_dir=str(_resolve(cfg.ct2_model_dir)))
     glossary_store = GlossaryStore(_resolve(cfg.glossary_db))
     provider_cfg = load_provider_config(_resolve(cfg.provider_config))
     print(f"Consistency editor: {provider_cfg.provider} {provider_cfg.model}")

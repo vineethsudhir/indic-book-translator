@@ -1,13 +1,15 @@
 # English → Kannada Book Translator + Audiobook Narrator
 
 Local-first pipeline that translates English EPUB books into Kannada and can
-narrate the result as an audiobook. Draft translation runs fully offline
+narrate the result as an audiobook. Draft translation runs locally by default
 (IndicTrans2); a consistency-editing pass enforces a persistent glossary,
 fixes pronoun/register drift, and tags each paragraph with an emotion for
-expressive TTS (Indic Parler-TTS).
+expressive TTS. **No powerful computer?** Every stage — translation, editing,
+and TTS — can run on cloud APIs with your own credits instead; see
+[Low-end machines: full-cloud setup](#low-end-machines-full-cloud-setup).
 
 ```
-EPUB → extract chapters → IndicTrans2 draft → glossary + LLM consistency edit
+EPUB → extract chapters → draft translation → glossary + LLM consistency edit
      → per-chapter Kannada JSON (+ optional WAV audiobook)
 ```
 
@@ -136,21 +138,82 @@ All credentials and model paths live in **three files** (plus `models/`):
 
 **Option A — fully local (default, no keys):** install
 [Ollama](https://ollama.com), `ollama pull gemma4:26b`, keep
-`provider: ollama` in the provider config.
+`provider: ollama` in the provider config, and download both local models
+above.
 
 **Option B — your OpenAI-compatible credits** (OpenAI, OpenRouter, Together,
-Groq, …): set `provider: openai_compatible`, `model:`, and `base_url:` in the
-provider config, put your key in `.env` as `OPENAI_API_KEY`.
+Groq, Sarvam, …): set `provider: openai_compatible`, `model:`, and
+`base_url:` in the provider config — and/or in `book.translation` /
+`book.tts` — put your key in `.env` as `OPENAI_API_KEY` (or `SARVAM_API_KEY`
+with `base_url: https://api.sarvam.ai/v1`, model `sarvam-m`).
 
 **Option C — your Anthropic credits:** set `provider: anthropic`,
 `model: claude-sonnet-4-…`, put your key in `.env` as `ANTHROPIC_API_KEY`.
+(Editing pass only; translation/TTS cloud options are Sarvam or
+OpenAI-compatible.)
 
-**Models to download:** a CTranslate2 conversion of
+**Option D — Sarvam cloud TTS:** `book.tts.provider: sarvam`,
+`model: bulbul:v3`, `voice:` a lowercase speaker (`anushka`, …),
+`SARVAM_API_KEY` in `.env`. Native `kn-IN` voices, no local TTS download.
+
+**Models to download (local path only):** a CTranslate2 conversion of
 `ai4bharat/indictrans2-en-indic-1B` into the `ct2_model_dir` layout
 (`model.bin` + `vocab/model.SRC` + `vocab/model.TGT`), and — for audiobooks
 only — `ai4bharat/indic-parler-tts` via
 `python scripts/download_tts_model.py` (gated; needs `huggingface-cli login`).
-`python scripts/setup.py` verifies all of it.
+`python scripts/setup.py` verifies all of it. Skip both if you use the
+full-cloud setup below.
+
+## Low-end machines: full-cloud setup
+
+If your computer can't hold the local models (~8 GB + RAM/VRAM), run all
+three LLM stages on cloud APIs. Recommended: [Sarvam AI](https://dashboard.sarvam.ai)
+(native Kannada translation + TTS); any OpenAI-compatible vendor works for
+translation and editing.
+
+```bash
+cp config/book.example.yaml config/book.yaml
+cp config/consistency_editor.example.yaml config/consistency_editor.yaml
+cp .env.example .env
+```
+
+1. Put your key in `.env`: `SARVAM_API_KEY=...`
+2. In `config/book.yaml`, uncomment/set:
+   ```yaml
+   translation:
+     provider: openai_compatible
+     model: sarvam-m
+     base_url: https://api.sarvam.ai/v1
+     api_key_env: SARVAM_API_KEY
+   tts:
+     provider: sarvam
+     model: bulbul:v3
+     voice: anushka
+     api_key_env: SARVAM_API_KEY
+   ```
+3. In `config/consistency_editor.yaml`, either keep local Ollama (lightest
+   cloud bill — editing is the highest-volume stage) or point it at the same
+   cloud vendor:
+   ```yaml
+   consistency_editor:
+     provider: openai_compatible
+     model: sarvam-m
+     base_url: https://api.sarvam.ai/v1
+     api_key_env: SARVAM_API_KEY
+   ```
+4. `python scripts/setup.py` — passes without any local model, then
+   `python scripts/translate_book.py` as usual.
+
+Notes:
+- Cloud translation enforces the same paragraph-count guarantee as local
+  (mismatched responses are retried once, then fail loudly instead of
+  misaligning).
+- Cloud TTS ignores the `emotion` tag (neither Sarvam Bulbul nor
+  OpenAI-compatible `/audio/speech` has an emotion parameter); `voice`
+  selects the speaker (`anushka`, `alloy`, …).
+- Cost control: do the 2-paragraph smoke test first, keep the glossary
+  approved (fewer editor retries), and translate before narrating — TTS is
+  the most expensive stage per word.
 
 ## Troubleshooting
 

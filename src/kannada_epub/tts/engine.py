@@ -5,6 +5,8 @@ import torch
 from parler_tts import ParlerTTSForConditionalGeneration
 from transformers import AutoTokenizer
 
+from .base import TTSProvider
+
 # No trained Kannada sentence-segmentation model is wired in yet (see the
 # analogous English-only note in translation/engine.py), so this splits on
 # the punctuation Kannada prose actually uses in practice: ASCII . ! ? plus
@@ -54,7 +56,7 @@ def _chunk_sentences(sentences: list[str], max_chars: int = _MAX_CHUNK_CHARS) ->
     return chunks
 
 
-class IndicParlerTTSEngine:
+class IndicParlerTTSEngine(TTSProvider):
     """Wraps ai4bharat/indic-parler-tts for paragraph-level Kannada narration.
 
     Paragraphs are split into sentences and grouped into <=~200-character

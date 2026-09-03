@@ -20,6 +20,25 @@ class ProviderConfig(BaseModel):
     think: bool = False
 
 
+class TranslationModelConfig(BaseModel):
+    provider: Literal["indictrans2_local", "openai_compatible"] = "indictrans2_local"
+    model: str = "sarvam-m"
+    base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
+    temperature: float = 0.2
+    max_tokens: int = 4096
+
+
+class TTSModelConfig(BaseModel):
+    provider: Literal["parler_local", "sarvam", "openai_compatible"] = "parler_local"
+    model: str = "bulbul:v3"
+    voice: str = "anushka"
+    language_code: str = "kn-IN"
+    base_url: Optional[str] = None
+    api_key_env: Optional[str] = None
+    sampling_rate: int = 22050
+
+
 class BookConfig(BaseModel):
     epub_path: str
     output_dir: str
@@ -32,6 +51,8 @@ class BookConfig(BaseModel):
     exclude_ids: list[str] = ["pg-header", "pg-footer", "coverpage-wrapper"]
     limit_chapters: list[str] | None = None
     max_paragraphs_per_chapter: int | None = None
+    translation: TranslationModelConfig = TranslationModelConfig()
+    tts: TTSModelConfig = TTSModelConfig()
 
 
 def load_provider_config(path: str | Path) -> ProviderConfig:

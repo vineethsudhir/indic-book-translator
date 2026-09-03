@@ -4,13 +4,13 @@ import numpy as np
 import soundfile as sf
 
 from .book_translator import TranslatedBatch
-from .tts.engine import IndicParlerTTSEngine
+from .tts import TTSProvider
 
 
 def build_audiobook(
     batches: list[TranslatedBatch],
     voice: str,
-    tts_engine: IndicParlerTTSEngine,
+    tts_engine: TTSProvider,
     output_path: str | Path,
     paragraph_gap_s: float = 0.6,
 ) -> Path:

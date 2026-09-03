@@ -4,7 +4,7 @@ from typing import Optional
 from .consistency_editor import ConsistencyEditor
 from .epub_io import Chapter
 from .glossary import GlossaryStore
-from .translation import IndicTrans2Engine
+from .translation import TranslationProvider
 
 
 @dataclass
@@ -46,7 +46,7 @@ class BookTranslator:
 
     def __init__(
         self,
-        translation_engine: IndicTrans2Engine,
+        translation_engine: TranslationProvider,
         glossary_store: GlossaryStore,
         consistency_editor: ConsistencyEditor,
         batch_size: int = 20,

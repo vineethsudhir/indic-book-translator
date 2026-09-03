@@ -74,7 +74,11 @@ def main() -> int:
         book_cfg_path = ROOT / "config" / "book.example.yaml"
     try:
         book = load_book_config(book_cfg_path)
-        ok(f"book config: {book_cfg_path.relative_to(ROOT)}")
+        try:
+            shown = str(book_cfg_path.relative_to(ROOT))
+        except ValueError:
+            shown = str(book_cfg_path)
+        ok(f"book config: {shown}")
     except Exception as e:
         fail(f"book config unreadable: {e}", "Copy config/book.example.yaml to config/book.yaml.")
         print(f"\n{CHECKS_PASSED} passed, {CHECKS_FAILED} failed.")
@@ -89,28 +93,63 @@ def main() -> int:
     else:
         fail(f"EPUB not found: {book.epub_path}", "Point book.epub_path at your .epub file.")
 
-    ct2 = resolve(book.ct2_model_dir)
-    vocab_src = ct2 / "vocab" / "model.SRC"
-    vocab_tgt = ct2 / "vocab" / "model.TGT"
-    model_bin = ct2 / "model.bin"
-    if model_bin.exists() and vocab_src.exists() and vocab_tgt.exists():
-        ok(f"IndicTrans2 CT2 model: {book.ct2_model_dir}")
-    else:
-        fail(
-            f"translation model incomplete at {book.ct2_model_dir}",
-            "Download a CTranslate2 conversion of ai4bharat/indictrans2-en-indic-1B "
-            "so the dir contains model.bin and vocab/model.SRC + vocab/model.TGT.",
-        )
+    t = book.translation
+    if t.provider == "indictrans2_local":
+        ct2 = resolve(book.ct2_model_dir)
+        vocab_src = ct2 / "vocab" / "model.SRC"
+        vocab_tgt = ct2 / "vocab" / "model.TGT"
+        model_bin = ct2 / "model.bin"
+        if model_bin.exists() and vocab_src.exists() and vocab_tgt.exists():
+            ok(f"IndicTrans2 CT2 model: {book.ct2_model_dir}")
+        else:
+            fail(
+                f"translation model incomplete at {book.ct2_model_dir}",
+                "Download a CTranslate2 conversion of ai4bharat/indictrans2-en-indic-1B "
+                "so the dir contains model.bin and vocab/model.SRC + vocab/model.TGT, "
+                "or switch book.translation.provider to openai_compatible for cloud.",
+            )
+    elif t.provider == "openai_compatible":
+        if not t.base_url:
+            fail("translation needs base_url", "Set book.translation.base_url.")
+        elif os.environ.get(t.api_key_env or "OPENAI_API_KEY"):
+            ok(f"Cloud translation ready: {t.model} @ {t.base_url} (bring your own credits)")
+        else:
+            fail(
+                f"{t.api_key_env or 'OPENAI_API_KEY'} not set",
+                "Add it to .env — no local translation model needed on this machine.",
+            )
 
-    tts_dir = ROOT / "models" / "indic-parler-tts"
-    if any(tts_dir.glob("*.safetensors")) or (tts_dir / "config.json").exists():
-        ok(f"TTS model: models/indic-parler-tts (audiobook support)")
-    else:
-        fail(
-            "TTS model not found (only needed for audiobooks)",
-            "Request access at https://huggingface.co/ai4bharat/indic-parler-tts, "
-            "run `huggingface-cli login`, then: python scripts/download_tts_model.py",
-        )
+    tts_cfg = book.tts
+    if tts_cfg.provider == "parler_local":
+        tts_dir = ROOT / "models" / "indic-parler-tts"
+        if any(tts_dir.glob("*.safetensors")) or (tts_dir / "config.json").exists():
+            ok("TTS model: models/indic-parler-tts (audiobook support)")
+        else:
+            fail(
+                "TTS model not found (only needed for audiobooks)",
+                "Request access at https://huggingface.co/ai4bharat/indic-parler-tts, "
+                "run `huggingface-cli login`, then: python scripts/download_tts_model.py — "
+                "or switch book.tts.provider to sarvam for cloud.",
+            )
+    elif tts_cfg.provider == "sarvam":
+        if os.environ.get(tts_cfg.api_key_env or "SARVAM_API_KEY"):
+            ok(f"Cloud TTS ready: {tts_cfg.model} / {tts_cfg.voice} (bring your own credits)")
+        else:
+            fail(
+                f"{tts_cfg.api_key_env or 'SARVAM_API_KEY'} not set",
+                "Sign up at https://dashboard.sarvam.ai, add the key to .env — "
+                "no local TTS model needed on this machine.",
+            )
+    elif tts_cfg.provider == "openai_compatible":
+        if not tts_cfg.base_url:
+            fail("TTS needs base_url", "Set book.tts.base_url.")
+        elif os.environ.get(tts_cfg.api_key_env or "OPENAI_API_KEY"):
+            ok(f"Cloud TTS ready: {tts_cfg.model} @ {tts_cfg.base_url}")
+        else:
+            fail(
+                f"{tts_cfg.api_key_env or 'OPENAI_API_KEY'} not set",
+                "Add it to .env — no local TTS model needed on this machine.",
+            )
 
     try:
         provider = load_provider_config(resolve(book.provider_config))

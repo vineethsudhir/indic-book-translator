@@ -5,6 +5,8 @@ import ctranslate2
 import sentencepiece as spm
 from IndicTransToolkit.processor import IndicProcessor
 
+from .base import TranslationProvider
+
 # Best-effort — English only. Indic-language sentence splitting (needed for the
 # future kn->en back-translation direction) isn't implemented yet; the model
 # was trained/evaluated on sentence-level input, and translating whole
@@ -44,7 +46,7 @@ def _split_roman_numeral_heading(text: str) -> tuple[str, str] | None:
     return f"{m.group(1)}.", (m.group(2) or "").strip()
 
 
-class IndicTrans2Engine:
+class IndicTrans2Engine(TranslationProvider):
     """Batch translator over a CTranslate2-converted IndicTrans2 checkpoint.
 
     IndicTrans2's vocabulary registers FLORES-style language tags ("eng_Latn",
