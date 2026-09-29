@@ -15,6 +15,7 @@ def build_audiobook(
     output_path: str | Path,
     paragraph_gap_s: float = 0.6,
     progress: Callable[[str], None] = print,
+    on_narrating: Callable[[int, int], None] | None = None,
 ) -> Path:
     """Narrate every edited paragraph across `batches`, in order, as one
     continuous audiobook file. Each paragraph is synthesized with its own
@@ -29,6 +30,8 @@ def build_audiobook(
         for text, emotion in zip(batch.edited_kannada, batch.edited_emotions):
             done += 1
             progress(f"  narrating [{done}/{total}] ({emotion}) {text[:40]}...")
+            if on_narrating is not None:
+                on_narrating(done, total)
             pieces.append(tts_engine.synthesize_paragraph(text, voice, emotion))
             pieces.append(gap)
 

@@ -247,8 +247,10 @@ def run_book(
     components: PipelineComponents | None = None,
     progress: Callable[[str], None] = print,
     cancel: threading.Event | None = None,
+    on_event: Callable[[dict], None] | None = None,
 ) -> RunResult:
     """Run the full book pipeline; see the module docstring for the contract."""
+    emit = on_event or (lambda _event: None)
     epub_path = resolve_path(cfg.epub_path)
     output_dir = resolve_path(cfg.output_dir)
     batch_size = options.batch_size or cfg.batch_size
@@ -274,6 +276,13 @@ def run_book(
     if max_paragraphs is not None:
         for chapter in chapters:
             chapter.paragraphs = chapter.paragraphs[:max_paragraphs]
+    emit({
+        "type": "start",
+        "chapters": [
+            {"id": c.id, "title": c.title or c.id, "paragraphs": len(c.paragraphs)}
+            for c in chapters
+        ],
+    })
     progress(f"Chapters to process: {[(c.id, len(c.paragraphs)) for c in chapters]}")
 
     t = cfg.translation
@@ -295,7 +304,7 @@ def run_book(
     all_results: list[QAResult] = []
     cancelled = False
 
-    for chapter in chapters:
+    for chapter_index, chapter in enumerate(chapters, start=1):
         if cancel is not None and cancel.is_set():
             cancelled = True
             progress(f"[{chapter.id}] cancelled before processing")
@@ -303,7 +312,15 @@ def run_book(
 
         starts = _expected_starts(len(chapter.paragraphs), batch_size)
         cached = [checkpoints_dir / _batch_key(chapter.id, s) for s in starts]
-        if cached and all(p.exists() for p in cached):
+        resumed = bool(cached and all(p.exists() for p in cached))
+        emit({
+            "type": "chapter",
+            "id": chapter.id,
+            "index": chapter_index,
+            "total": len(chapters),
+            "resumed": resumed,
+        })
+        if resumed:
             batches = [_checkpoint_to_batch(_load_checkpoint(p)) for p in cached]
             progress(f"[{chapter.id}] resume: {len(batches)} batches from checkpoints")
             manifest["skipped"].append(chapter.id)
@@ -314,6 +331,7 @@ def run_book(
                 _write_checkpoint(checkpoints_dir, batch)
 
         if components.qa is not None:
+            emit({"type": "stage", "stage": "qa"})
             all_results.extend(
                 _run_chapter_qa(cfg, components, chapter, batches, output_dir, progress)
             )
@@ -340,6 +358,7 @@ def run_book(
     if cancelled:
         # Manifest is already on disk for the completed chapters; skip
         # QA report / EPUB / audiobook as the task specifies.
+        emit({"type": "done"})
         return RunResult(
             output_dir=output_dir,
             chapters=processed,
@@ -361,6 +380,7 @@ def run_book(
 
     epub_out_path: Path | None = None
     if options.write_epub:
+        emit({"type": "stage", "stage": "epub"})
         # Re-load the source with no truncation: positions beyond
         # max_paragraphs were never translated, so they stay English.
         full_chapters = load_epub_chapters(epub_path, exclude_ids=cfg.exclude_ids)
@@ -377,6 +397,7 @@ def run_book(
 
     audiobook_path: Path | None = None
     if options.build_audiobook and components.tts is not None:
+        emit({"type": "stage", "stage": "audiobook"})
         audiobook_path = output_dir / f"{epub_path.stem}.kn.wav"
         build_audiobook(
             batches=all_batches,
@@ -384,10 +405,14 @@ def run_book(
             tts_engine=components.tts,
             output_path=audiobook_path,
             progress=progress,
+            on_narrating=lambda done, total: emit(
+                {"type": "narrating", "done": done, "total": total}
+            ),
         )
         progress(f"Wrote audiobook: {audiobook_path}")
 
     progress(f"Done. Outputs in {output_dir}")
+    emit({"type": "done"})
     return RunResult(
         output_dir=output_dir,
         chapters=processed,

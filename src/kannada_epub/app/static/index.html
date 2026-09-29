@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="app-token" content="__APP_TOKEN__">
+  <meta name="theme-color" content="#f7f8f6">
+  <title>Kannada Book Translator</title>
+  <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#/translate" aria-label="Kannada Book Translator home">
+        <span class="brand-mark" aria-hidden="true">ಕ</span>
+        <span>Kannada Book<br>Translator</span>
+      </a>
+      <nav aria-label="Main navigation">
+        <a href="#/translate" data-route="translate"><span class="nav-icon">↗</span>Translate</a>
+        <a href="#/library" data-route="library"><span class="nav-icon">▤</span>Library</a>
+        <a href="#/settings" data-route="settings"><span class="nav-icon">⚙</span>Settings</a>
+      </nav>
+      <div class="sidebar-foot">Made for thoughtful reading</div>
+    </aside>
+    <main id="content" class="content" tabindex="-1"></main>
+  </div>
+  <div id="live-region" class="sr-only" aria-live="polite"></div>
+</body>
+</html>

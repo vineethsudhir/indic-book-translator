@@ -1,14 +1,14 @@
 """Smoke test for the desktop-ready app package (``kannada_epub.app``).
 
-Exercises settings/secrets persistence, the in-process background runner
-(real pipeline, FAKE engines, real Sherlock EPUB), the Gradio app
-construction, and a cloud-only import of the UI with the local ML stack
+Exercises settings/secrets persistence, the in-process background runner,
+FastAPI endpoints, and a cloud-only server import with the local ML stack
 blocked. No models, no network.
 
 Run: .venv/bin/python scripts/test_app.py
 """
 
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -236,37 +236,113 @@ def test_runner(settings: AppSettings) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Gradio construction + local-mode check
+# FastAPI API + local-mode check
 # ---------------------------------------------------------------------------
-def test_build_app() -> None:
-    import gradio as gr
+def test_api() -> None:
+    from fastapi.testclient import TestClient
 
-    from kannada_epub.app.ui import build_app
+    from kannada_epub.app.server import create_app
 
-    app = build_app()
-    assert isinstance(app, gr.Blocks)
+    for key in KNOWN_KEYS:
+        os.environ.pop(key, None)
+        save_secret(key, "")
+    app = create_app(components_factory=lambda: make_components("api-glossary.db"))
+    token = app.state.app_token
+    headers = {"Host": "127.0.0.1:7860"}
+    authed = {**headers, "X-App-Token": token}
+    with TestClient(app) as client:
+        assert client.get("/api/state", headers=headers).status_code in (401, 403)
+        assert client.get("/api/state", headers={"Host": "evil.example:7860", "X-App-Token": token}).status_code in (400, 403)
+        state_response = client.get("/api/state", headers=authed)
+        assert state_response.status_code == 200, state_response.text
+
+        page = client.get("/", headers=headers)
+        assert page.status_code == 200
+        assert token in page.text and "__APP_TOKEN__" not in page.text
+        assert "/static/app.js" in page.text and "/static/app.css" in page.text
+        static_dir = ROOT / "src" / "kannada_epub" / "app" / "static"
+        html_source = (static_dir / "index.html").read_text(encoding="utf-8")
+        css_source = (static_dir / "app.css").read_text(encoding="utf-8")
+        js_source = (static_dir / "app.js").read_text(encoding="utf-8")
+        remote_attribute = re.compile(r"\b(?:src|href)\s*=\s*['\"]https?://", re.I)
+        remote_css = re.compile(
+            r"url\(\s*['\"]?https?://|@import\s+(?:url\()?\s*['\"]?https?://",
+            re.I,
+        )
+        absolute_js_request = re.compile(
+            r"(?:fetch|import|WebSocket)\s*\(\s*['\"`]https?://"
+            r"|\.open\s*\(\s*['\"](?:GET|POST|PUT|DELETE)\s*,\s*['\"]https?://",
+            re.I,
+        )
+        assert not remote_attribute.search(html_source)
+        assert not remote_css.search(css_source)
+        assert not absolute_js_request.search(js_source)
+        assert client.get("/favicon.ico", headers=headers).status_code == 200
+        invalid = client.post("/api/books", headers=authed, files={"file": ("notes.txt", b"not epub")})
+        assert invalid.status_code == 400
+
+        with EPUB.open("rb") as source:
+            response = client.post("/api/books", headers=authed, files={"file": (EPUB.name, source, "application/epub+zip")})
+        assert response.status_code == 200, response.text
+        uploaded = response.json()
+        assert uploaded["title"] and uploaded["title"] != EPUB.name
+        assert len(uploaded["chapters"]) == 12
+        assert all(chapter["title"] for chapter in uploaded["chapters"])
+
+        missing = client.post("/api/run", headers=authed, json={"book_id": uploaded["book_id"], "qa": False})
+        assert missing.status_code == 400
+        assert "SARVAM_API_KEY" in missing.json()["detail"]
+
+        marker = "test-only-secret-value-never-return-this"
+        keys_response = client.put("/api/keys", headers=authed, json={"SARVAM_API_KEY": marker})
+        assert keys_response.status_code == 200 and marker not in keys_response.text
+        assert marker not in client.get("/api/state", headers=authed).text
+        client.put("/api/keys", headers=authed, json={"SARVAM_API_KEY": ""})
+
+        os.environ["SARVAM_API_KEY"] = "fake-sarvam-key"
+        os.environ["ANTHROPIC_API_KEY"] = "fake-anthropic-key"
+        started = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "qa": False, "audiobook": False,
+            "preview_paragraphs": 2,
+        })
+        assert started.status_code == 200, started.text
+        assert started.json()["state"] in {"running", "finished"}
+        assert wait_until(lambda: client.get("/api/run", headers=authed).json()["state"] == "finished")
+        run_status = client.get("/api/run", headers=authed).json()
+        assert run_status["chapter_total"] == 12
+        assert run_status["result"]["epub"]
+        download = client.get(run_status["result"]["epub"], headers=headers)
+        assert download.status_code == 200 and download.content.startswith(b"PK")
+
+        library = client.get("/api/library", headers=authed)
+        assert library.status_code == 200
+        assert any(item["book_id"] == uploaded["book_id"] for item in library.json())
+        chapters = client.get(f"/api/library/{uploaded['book_id']}/chapters", headers=authed).json()
+        assert len(chapters) == 12
+        chapter_ids = [item["id"] for item in chapters]
+        assert chapter_ids.index("item4") < chapter_ids.index("item10")
+        detail = client.get(f"/api/library/{uploaded['book_id']}/chapters/item4", headers=authed)
+        assert detail.status_code == 200
+        assert detail.json()["paragraphs"]
+        assert {"en", "kn"}.issubset(detail.json()["paragraphs"][0])
+        assert client.get("/api/library/..%2F..%2Fetc/chapters", headers=authed).status_code == 404
+        traversal = client.get(f"/api/library/{uploaded['book_id']}/files/..%2Fsettings.yaml?token={token}", headers=headers)
+        assert traversal.status_code == 404
+
     assert set(local_mode_status()).issuperset(
         {"torch", "transformers", "ctranslate2", "sentencepiece", "IndicTransToolkit", "parler_tts"}
     )
 
 
-def check_cloud_only_ui() -> None:
-    """Import the UI and build the app with the local ML stack blocked.
-
-    ``gradio`` itself imports ``huggingface_hub`` (a GUI dependency, pinned in
-    the ``gui`` extra), so it is imported before the blocker is installed; the
-    blocker still stops any *new* local-ML import and any later
-    ``huggingface_hub`` submodule pull.
-    """
+def check_cloud_only_server() -> None:
+    """Import the API module and construct its app with local libraries blocked."""
     src = str(ROOT / "src")
     code = r'''
 import sys
 sys.path.insert(0, "__SRC__")
 
-import gradio  # noqa: F401  (needs huggingface_hub; GUI extra installs it)
-
 BLOCKED = {"torch", "transformers", "ctranslate2", "sentencepiece",
-           "IndicTransToolkit", "parler_tts", "huggingface_hub"}
+           "IndicTransToolkit", "parler_tts"}
 
 
 class Blocker:
@@ -278,11 +354,9 @@ class Blocker:
 
 sys.meta_path.insert(0, Blocker())
 
-import kannada_epub.app.ui as ui
-import gradio as gr
-
-app = ui.build_app()
-assert isinstance(app, gr.Blocks)
+from kannada_epub.app.server import create_app
+app = create_app()
+assert app.state.app_token
 print("app-cloud-only-import-ok")
 '''.replace("__SRC__", src)
 
@@ -307,8 +381,8 @@ def main() -> None:
         test_settings()
         test_secrets()
         test_runner(load_settings())
-        test_build_app()
-        check_cloud_only_ui()
+        test_api()
+        check_cloud_only_server()
     finally:
         import shutil
 

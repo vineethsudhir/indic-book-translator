@@ -19,15 +19,15 @@ Sample book included: Project Gutenberg's *Adventures of Sherlock Holmes*
 
 ## Quick start: the app
 
-The easiest way to use the translator is the app: pick an EPUB, press
-**Translate**, download the Kannada EPUB. It runs in your browser.
+The app is the easiest way to translate and review a book. It opens as a local
+web app in your browser and works without loading any web resources.
 
 **1. Install** (once, from the repo folder):
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[gui]"            # cloud providers only (small)
-# or, to also run models on this computer:
+.venv/bin/pip install -e ".[gui]"            # local web app + cloud providers
+# optional: also run models on this computer:
 .venv/bin/pip install -e ".[gui,local]"      # adds torch, IndicTrans2, Parler-TTS
 ```
 
@@ -40,36 +40,36 @@ On Windows use `.venv\Scripts\pip` and `.venv\Scripts\python` instead of
 .venv/bin/python -m kannada_epub.app
 ```
 
-Your browser opens at http://127.0.0.1:7860. Leave the terminal open while
-you use the app; press Ctrl+C there to quit.
+Your browser opens to the local app. Leave the terminal open while you use it;
+press Ctrl+C there to quit. Add `--no-browser` to start without opening a tab.
 
-**3. Choose your providers (Settings tab), then Save.** The defaults are
-cloud services, so either add keys or switch to local:
+**3. Set up providers (Settings).** The defaults use cloud services. In
+Settings, choose friendly provider options, then **Save settings**. Add keys
+under **API keys** or choose local providers:
 
 | Stage | Cloud default | Key needed | Local alternative (needs `.[local]`) |
 |---|---|---|---|
-| Translation | Sarvam `sarvam-m` | `SARVAM_API_KEY` | `indictrans2_local` |
-| Consistency edit | Anthropic `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | `ollama` + `gemma4:26b` (install [Ollama](https://ollama.com)) |
-| Audiobook (TTS) | Sarvam `bulbul:v3` | `SARVAM_API_KEY` | `parler_local` |
+| Translation | Sarvam `sarvam-m` | `SARVAM_API_KEY` | IndicTrans2 on this computer |
+| Editing | Claude `claude-haiku-4-5` | `ANTHROPIC_API_KEY` | Ollama on this computer + `gemma4:26b` (install [Ollama](https://ollama.com)) |
+| Audiobook voice | Sarvam Bulbul `bulbul:v3` | `SARVAM_API_KEY` | Indic Parler-TTS on this computer |
 
-Paste keys into the **API keys** section of Settings. They are saved in your
-user data folder (below), never in the repo, and never shown again. Keys
-already set in your shell environment also work.
+Paste keys into the **API keys** section. They are saved in your user data
+folder (below), never in the repo, and never shown again. Keys already set in
+your shell environment also work.
 
-**4. Translate (Translate tab).** Choose the `.epub`, optionally tick
-**Run QA check** / **Build audiobook**, and for a first try set
-**Preview: first N paragraphs per chapter** to 2 — a whole book takes much
-longer. When it finishes, download the results from the buttons under the log,
-or press **Open output folder**.
+**4. Translate.** Choose an EPUB, enable **Quality check (QA)** or **Create
+audiobook** if wanted, and use **Quick preview** with 2 paragraphs per chapter
+for a short first run. Press **Translate book**. When ready, choose **Open in
+Books app**, **Show in folder**, or a download link.
 
-**5. Review (Review tab)** shows English and Kannada side by side per chapter,
-with each paragraph's QA status; tick *Show only flagged/retry* to see the
-ones worth checking by hand.
+**5. Read and review.** **Library** lists translated books. Open a book and
+chapter to read English and Kannada together; switch on **Only show paragraphs
+to review** to focus on retry and flagged paragraphs.
 
 **Where your files are.** Translated books go to your Documents folder:
 `Documents/KannadaBookTranslator/outputs/<book name>/` (uploaded originals in
-`Documents/KannadaBookTranslator/books/`). The app's **Open output folder**
-button takes you straight there.
+`Documents/KannadaBookTranslator/books/`). **Show in folder** opens the output
+location.
 
 Settings, API keys and the glossary database are app-private and live in the
 OS's app-data folder instead:
@@ -88,16 +88,14 @@ the original: ≥ 0.85 similarity passes, 0.70–0.85 gets one automatic
 re-translation, below 0.70 is flagged (highlighted in the EPUB and listed in
 `qa_report.json`). In Settings, pick one of:
 
-- *Cloud only:* back-translation `llm` (uses your editing provider) +
-  embedding `openai_compatible` with an OpenAI key (`text-embedding-3-small`),
-  or Ollama (`http://localhost:11434/v1`, model `nomic-embed-text` after
+- *Cloud only:* use the editing model for back-translation and choose OpenAI
+  embeddings, or Ollama embeddings (`nomic-embed-text` after
   `ollama pull nomic-embed-text`).
-- *Local (needs `.[local]`):* back-translation `indictrans2_local` (run
-  `python scripts/download_qa_models.py` once) and/or embedding
-  `local_minilm` with model `sentence-transformers/all-MiniLM-L6-v2`.
+- *Local (needs `.[local]`):* choose IndicTrans2 for back-translation and/or
+  MiniLM for similarity. Run `python scripts/download_qa_models.py` once.
 
-**Local mode tab** shows which local libraries are installed and how to add
-them. Local models are downloaded separately — see
+**Settings → Local mode** shows which local libraries are installed and how to
+add them. Local models are downloaded separately — see
 [Bring your own models / credits](#bring-your-own-models--credits).
 
 ## Prerequisites

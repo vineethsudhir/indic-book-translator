@@ -230,6 +230,7 @@ def main() -> None:
     try:
         components, engine = _make_components(tmp)
         cfg = _make_cfg(tmp)
+        events: list[dict] = []
         options = RunOptions(
             limit_chapters=[CHAPTER_ID],
             max_paragraphs=N_PARAGRAPHS,
@@ -242,7 +243,21 @@ def main() -> None:
             options=options,
             components=components,
             progress=lambda _msg: None,
+            on_event=events.append,
         )
+
+        event_types = [event["type"] for event in events]
+        assert event_types == ["start", "chapter", "stage", "stage", "done"], event_types
+        assert events[0]["chapters"] == [{
+            "id": CHAPTER_ID,
+            "title": source_item4.title or source_item4.id,
+            "paragraphs": N_PARAGRAPHS,
+        }]
+        assert events[1] == {
+            "type": "chapter", "id": CHAPTER_ID, "index": 1, "total": 1, "resumed": False
+        }
+        assert events[2] == {"type": "stage", "stage": "qa"}
+        assert events[3] == {"type": "stage", "stage": "epub"}
 
         # --- EPUB written, first 6 paragraphs Kannada, rest English --------
         assert result.epub_path is not None

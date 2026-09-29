@@ -1,0 +1,574 @@
+"""Local FastAPI server for the desktop-ready Kannada book translator."""
+
+from __future__ import annotations
+
+import argparse
+import hmac
+import json
+import os
+import secrets
+import socket
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+from urllib.parse import quote
+
+from ebooklib import epub
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
+
+from ..epub_io import load_epub_chapters
+from ..pipeline import PipelineComponents, RunOptions
+from .paths import books_dir, outputs_dir
+from .runner import BookRun
+from .settings import (
+    KNOWN_KEYS,
+    AppSettings,
+    load_secrets_into_env,
+    load_settings,
+    local_mode_status,
+    save_secret,
+    save_settings,
+    secret_status,
+)
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    return list(dict.fromkeys(item for item in items if item))
+
+
+def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], list[str]]:
+    keys: list[str] = []
+    local: list[str] = []
+    if settings.translation.provider == "openai_compatible":
+        keys.append(settings.translation.api_key_env or "OPENAI_API_KEY")
+    elif settings.translation.provider == "indictrans2_local":
+        local += ["ctranslate2", "sentencepiece", "IndicTransToolkit"]
+    if settings.editor.provider == "anthropic":
+        keys.append(settings.editor.api_key_env or "ANTHROPIC_API_KEY")
+    elif settings.editor.provider == "openai_compatible":
+        keys.append(settings.editor.api_key_env or "OPENAI_API_KEY")
+    if audiobook:
+        if settings.tts.provider == "sarvam":
+            keys.append(settings.tts.api_key_env or "SARVAM_API_KEY")
+        elif settings.tts.provider == "openai_compatible":
+            keys.append(settings.tts.api_key_env or "OPENAI_API_KEY")
+        else:
+            local += ["torch", "transformers", "parler_tts"]
+    if settings.qa.enabled:
+        if settings.qa.back_translation == "indictrans2_local":
+            local += ["ctranslate2", "sentencepiece", "IndicTransToolkit"]
+        if settings.qa.embedding == "openai_compatible":
+            keys.append(settings.qa.embedding_api_key_env or "OPENAI_API_KEY")
+        else:
+            local += ["torch", "transformers"]
+    key_names = _dedupe(keys)
+    module_names = _dedupe(local)
+    statuses = local_mode_status()
+    return (
+        [name for name in key_names if not os.environ.get(name)],
+        [name for name in module_names if not statuses.get(name, False)],
+    )
+
+
+def _metadata(path: Path) -> tuple[str, str]:
+    book = epub.read_epub(str(path), options={"ignore_ncx": True})
+    titles = book.get_metadata("DC", "title")
+    creators = book.get_metadata("DC", "creator")
+    title = str(titles[0][0]).strip() if titles and titles[0][0] else path.stem
+    author = str(creators[0][0]).strip() if creators and creators[0][0] else "Unknown author"
+    return title, author
+
+
+def _source_epub(folder: Path, manifest: dict) -> Path | None:
+    """Find a source EPUB from the manifest, then the app's uploaded books."""
+    source_name = Path(str(manifest.get("epub", ""))).name
+    candidates = []
+    if manifest.get("epub"):
+        candidates.append(Path(manifest["epub"]))
+    if source_name:
+        candidates.append(books_dir() / source_name)
+    candidates.append(books_dir() / f"{folder.name}.epub")
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _source_titles(folder: Path, manifest: dict) -> dict[str, str]:
+    source = _source_epub(folder, manifest)
+    if source is None:
+        return {}
+    try:
+        return {
+            chapter.id: chapter.title or chapter.id
+            for chapter in load_epub_chapters(source, exclude_ids=[])
+        }
+    except Exception:
+        return {}
+
+
+def _book_metadata(folder: Path, manifest: dict) -> tuple[str, str]:
+    source = _source_epub(folder, manifest)
+    if source is not None:
+        try:
+            return _metadata(source)
+        except Exception:
+            pass
+    return folder.name, "Unknown author"
+
+
+def _safe_book_dir(book_id: str) -> Path:
+    if not book_id or book_id in {".", ".."} or "/" in book_id or "\\" in book_id:
+        raise HTTPException(404, "Book not found")
+    root = outputs_dir()
+    target = next(
+        (path for path in root.iterdir() if path.name == book_id and path.is_dir() and not path.is_symlink()),
+        None,
+    )
+    if target is None or not (target / "manifest.json").is_file():
+        raise HTTPException(404, "Book not found")
+    return target
+
+
+def _qa_summary(folder: Path) -> dict | None:
+    report = folder / "qa_report.json"
+    if not report.is_file():
+        return None
+    try:
+        summary = json.loads(report.read_text(encoding="utf-8")).get("summary", {})
+        return {
+            "pass": int(summary.get("pass", 0)),
+            "retry": int(summary.get("retry", 0)),
+            "flagged": int(summary.get("flagged", 0)),
+            "total": int(summary.get("total", 0)),
+        }
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def create_app(
+    *,
+    components_factory: Callable[[], PipelineComponents] | None = None,
+    port: int = 7860,
+) -> FastAPI:
+    """Create an isolated app instance (also used by API tests)."""
+    app = FastAPI(title="Kannada Book Translator", docs_url=None, redoc_url=None)
+    token = secrets.token_urlsafe(32)
+    runner = BookRun()
+    app.state.app_token = token
+    app.state.runner = runner
+    app.state.run_meta = {"book_id": None, "filename": None, "chapters": [], "started": None}
+    app.state.components_factory = components_factory
+
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    repo_fonts = Path(__file__).resolve().parents[3] / "assets" / "fonts"
+    installed_fonts = Path(sys.prefix) / "assets" / "fonts"
+
+    @app.middleware("http")
+    async def local_host_only(request: Request, call_next):
+        host = request.headers.get("host", "")
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        if host not in allowed:
+            return JSONResponse({"detail": "Requests must use the local app address."}, status_code=403)
+        return await call_next(request)
+
+    async def require_token(
+        request: Request,
+        x_app_token: str | None = Header(default=None, alias="X-App-Token"),
+    ) -> None:
+        supplied = x_app_token or request.query_params.get("token", "")
+        if not hmac.compare_digest(str(supplied), token):
+            raise HTTPException(status_code=401, detail="App token required")
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index():
+        html = (static_dir / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__APP_TOKEN__", token))
+
+    @app.get("/favicon.ico")
+    async def favicon():
+        icon = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">'
+            '<rect width="64" height="64" rx="16" fill="#28745c"/>'
+            '<text x="50%" y="53%" dominant-baseline="middle" text-anchor="middle" '
+            'font-family="sans-serif" font-size="38" fill="white">ಕ</text></svg>'
+        )
+        return Response(content=icon, media_type="image/svg+xml")
+
+    @app.get("/fonts/{font_name}")
+    async def font(font_name: str):
+        if font_name not in {"NotoSansKannada-Regular.ttf", "NotoSansKannada-Bold.ttf"}:
+            raise HTTPException(404, "Font not found")
+        path = repo_fonts / font_name
+        if not path.is_file():
+            path = installed_fonts / font_name
+        if not path.is_file():
+            raise HTTPException(404, "Kannada font is unavailable")
+        return FileResponse(path, media_type="font/ttf")
+
+    @app.get("/api/state", dependencies=[Depends(require_token)])
+    async def state():
+        return {
+            "settings": load_settings().model_dump(mode="json"),
+            "key_status": secret_status(),
+            "local_mode": local_mode_status(),
+            "run": _run_status(app),
+        }
+
+    @app.get("/api/settings", dependencies=[Depends(require_token)])
+    async def get_settings():
+        return load_settings().model_dump(mode="json")
+
+    @app.put("/api/settings", dependencies=[Depends(require_token)])
+    async def put_settings(request: Request):
+        try:
+            settings = AppSettings.model_validate(await request.json())
+        except ValidationError as exc:
+            errors = [f"{'.'.join(map(str, item['loc']))}: {item['msg']}" for item in exc.errors()]
+            raise HTTPException(400, detail="; ".join(errors)) from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, detail=f"Invalid settings: {exc}") from exc
+        save_settings(settings)
+        return {"settings": settings.model_dump(mode="json"), "saved": True}
+
+    @app.put("/api/keys", dependencies=[Depends(require_token)])
+    async def put_keys(request: Request):
+        try:
+            values = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "Expected a JSON object of API keys") from exc
+        if not isinstance(values, dict):
+            raise HTTPException(400, "Expected a JSON object of API keys")
+        unknown = set(values) - set(KNOWN_KEYS)
+        if unknown:
+            raise HTTPException(400, f"Unknown key name: {', '.join(sorted(unknown))}")
+        for name, value in values.items():
+            if not isinstance(value, str):
+                raise HTTPException(400, f"{name} must be text")
+            try:
+                save_secret(name, value.strip())
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+        return {"key_status": secret_status()}
+
+    @app.post("/api/books", dependencies=[Depends(require_token)])
+    async def upload_book(file: UploadFile = File(...)):
+        filename = Path((file.filename or "").replace("\\", "/")).name
+        if not filename.lower().endswith(".epub"):
+            raise HTTPException(400, "Choose an EPUB file (.epub).")
+        stem = Path(filename).stem.strip() or "book"
+        dest_dir = books_dir()
+        dest = dest_dir / filename
+        suffix = 2
+        while dest.exists():
+            dest = dest_dir / f"{stem}_{suffix}.epub"
+            suffix += 1
+        content = await file.read()
+        dest.write_bytes(content)
+        try:
+            title, author = _metadata(dest)
+            settings = load_settings()
+            chapters = load_epub_chapters(dest, exclude_ids=settings.exclude_ids)
+        except Exception as exc:  # malformed zip/container/metadata
+            dest.unlink(missing_ok=True)
+            raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
+        return {
+            "book_id": dest.stem,
+            "filename": dest.name,
+            "title": title,
+            "author": author,
+            "chapters": [
+                {"id": c.id, "title": c.title or c.id, "paragraphs": len(c.paragraphs)}
+                for c in chapters
+            ],
+        }
+
+    @app.post("/api/run", dependencies=[Depends(require_token)])
+    async def start_run(request: Request):
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Expected book and run options as a JSON object.")
+        book_id = str(payload.get("book_id", ""))
+        filename = Path(book_id).name + ".epub"
+        source = books_dir() / filename
+        if (
+            not book_id or book_id != Path(book_id).name or "/" in book_id
+            or "\\" in book_id or source.parent != books_dir() or not source.is_file()
+        ):
+            raise HTTPException(404, "Uploaded book not found. Choose the EPUB again.")
+        if runner.is_running():
+            raise HTTPException(409, "A translation is already running.")
+        settings = load_settings()
+        qa_enabled = payload.get("qa", settings.qa.enabled)
+        audiobook = payload.get("audiobook", False)
+        if not isinstance(qa_enabled, bool) or not isinstance(audiobook, bool):
+            raise HTTPException(400, "Quality check and audiobook options must be true or false.")
+        settings = settings.model_copy(update={
+            "qa": settings.qa.model_copy(update={"enabled": qa_enabled})
+        })
+        load_secrets_into_env()
+        missing_keys, missing_modules = _requirements(settings, audiobook)
+        if missing_keys or missing_modules:
+            messages = []
+            if missing_keys:
+                messages.append("Add these API keys in Settings: " + ", ".join(missing_keys) + ".")
+            if missing_modules:
+                messages.append(
+                    "Install Local mode libraries in Settings: " + ", ".join(missing_modules) + "."
+                )
+            raise HTTPException(400, " ".join(messages))
+        preview = payload.get("preview_paragraphs")
+        try:
+            if preview in (None, ""):
+                preview = None
+            elif isinstance(preview, bool) or (isinstance(preview, float) and not preview.is_integer()):
+                raise ValueError
+            else:
+                preview = int(preview)
+            if preview is not None and preview < 1:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, "Preview paragraphs must be a positive whole number.") from exc
+        options = RunOptions(
+            max_paragraphs=preview,
+            batch_size=settings.batch_size,
+            build_audiobook=audiobook,
+        )
+        app.state.run_meta = {
+            "book_id": book_id,
+            "filename": filename,
+            "chapters": [],
+            "started": time.time(),
+        }
+        components = components_factory() if components_factory is not None else None
+        try:
+            runner.start(source, settings, options, components=components)
+        except RuntimeError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return _run_status(app)
+
+    @app.post("/api/run/stop", dependencies=[Depends(require_token)])
+    async def stop_run():
+        if runner.is_running():
+            runner.cancel()
+        return _run_status(app)
+
+    @app.get("/api/run", dependencies=[Depends(require_token)])
+    async def get_run():
+        return _run_status(app)
+
+    @app.get("/api/library", dependencies=[Depends(require_token)])
+    async def library():
+        entries = []
+        for folder in outputs_dir().iterdir():
+            manifest_path = folder / "manifest.json"
+            if not folder.is_dir() or not manifest_path.is_file():
+                continue
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            source_name = Path(manifest.get("epub", folder.name)).name
+            title, author = _book_metadata(folder, manifest)
+            epub_name = f"{Path(source_name).stem}.kn.epub"
+            audio_name = f"{Path(source_name).stem}.kn.wav"
+            entries.append({
+                "book_id": folder.name,
+                "title": title,
+                "author": author,
+                "updated_at": datetime.fromtimestamp(
+                    manifest_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
+                "_mtime": manifest_path.stat().st_mtime,
+                "chapters": len(manifest.get("chapters", [])),
+                "has_epub": (folder / epub_name).is_file(),
+                "has_audiobook": (folder / audio_name).is_file(),
+                "qa_summary": _qa_summary(folder),
+            })
+        entries.sort(key=lambda item: item["_mtime"], reverse=True)
+        for item in entries:
+            item.pop("_mtime", None)
+        return entries
+
+    @app.get("/api/library/{book_id}/chapters", dependencies=[Depends(require_token)])
+    async def library_chapters(book_id: str):
+        folder = _safe_book_dir(book_id)
+        data = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        titles = _source_titles(folder, data)
+        return [
+            {
+                **chapter,
+                "title": titles.get(chapter.get("id"), chapter.get("title") or chapter.get("id")),
+            }
+            for chapter in data.get("chapters", [])
+        ]
+
+    @app.get("/api/library/{book_id}/chapters/{chapter_id}", dependencies=[Depends(require_token)])
+    async def chapter_detail(book_id: str, chapter_id: str):
+        folder = _safe_book_dir(book_id)
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        chapter_info = next((c for c in manifest.get("chapters", []) if c.get("id") == chapter_id), None)
+        if chapter_info is None or "/" in chapter_id or "\\" in chapter_id:
+            raise HTTPException(404, "Chapter not found")
+        chapter_path = folder / "chapters" / f"{chapter_id}.json"
+        if not chapter_path.is_file():
+            raise HTTPException(404, "Chapter not found")
+        chapter_data = json.loads(chapter_path.read_text(encoding="utf-8"))
+        qa_path = folder / "qa" / f"{chapter_id}.json"
+        qa_results = json.loads(qa_path.read_text(encoding="utf-8")).get("results", []) if qa_path.is_file() else []
+        paragraphs = []
+        position = 0
+        for batch in chapter_data.get("batches", []):
+            english = batch.get("source_english", [])
+            kannada = batch.get("edited_kannada", [])
+            emotions = batch.get("edited_emotions", [])
+            for offset, (en, kn) in enumerate(zip(english, kannada)):
+                qa = qa_results[position] if position < len(qa_results) else {}
+                paragraphs.append({
+                    "index": qa.get("paragraph_index", batch.get("paragraph_start", 0) + offset),
+                    "en": en,
+                    "kn": kn,
+                    "emotion": emotions[offset] if offset < len(emotions) else None,
+                    "qa_status": qa.get("status"),
+                    "qa_score": qa.get("similarity_score"),
+                    "back_translation": qa.get("back_translated_en"),
+                })
+                position += 1
+        title = _source_titles(folder, manifest).get(
+            chapter_id, chapter_info.get("title") or chapter_id
+        )
+        return {"id": chapter_id, "title": title, "paragraphs": paragraphs}
+
+    @app.get("/api/library/{book_id}/files/{name}")
+    async def download_file(book_id: str, name: str, token: str = ""):
+        if not hmac.compare_digest(token, app.state.app_token):
+            raise HTTPException(401, "App token required")
+        folder = _safe_book_dir(book_id)
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        stem = Path(manifest.get("epub", book_id)).stem
+        allowed = {f"{stem}.kn.epub", "qa_report.json", f"{stem}.kn.wav"}
+        if name not in allowed or name not in {p.name for p in folder.iterdir() if p.is_file()}:
+            raise HTTPException(404, "File not found")
+        return FileResponse(folder / name, filename=name)
+
+    @app.post("/api/library/{book_id}/open", dependencies=[Depends(require_token)])
+    async def open_output(book_id: str, request: Request):
+        folder = _safe_book_dir(book_id)
+        payload = await request.json()
+        what = payload.get("what")
+        if what == "folder":
+            target = folder
+        elif what == "epub":
+            manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+            target = folder / f"{Path(manifest.get('epub', book_id)).stem}.kn.epub"
+            if not target.is_file():
+                raise HTTPException(404, "Translated EPUB not found")
+        else:
+            raise HTTPException(400, 'Choose "folder" or "epub".')
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(target)])
+            elif sys.platform == "win32":
+                os.startfile(str(target))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+        except OSError as exc:
+            raise HTTPException(500, f"Could not open this item: {exc}") from exc
+        return {"opened": True}
+
+    return app
+
+
+def _run_status(app: FastAPI) -> dict:
+    runner: BookRun = app.state.runner
+    meta = app.state.run_meta
+    events = runner.events()
+    chapters = meta.get("chapters", [])
+    stage: str | None = None
+    chapter_index = 0
+    chapter_total = len(chapters)
+    chapter_title = None
+    narrating = None
+    for event in events:
+        if event["type"] == "start":
+            chapters = event.get("chapters", [])
+            chapter_total = len(chapters)
+        elif event["type"] == "chapter":
+            chapter_index = event.get("index", 0)
+            chapter_total = event.get("total", chapter_total)
+            chapter_title = next((c.get("title") for c in chapters if c.get("id") == event.get("id")), event.get("id"))
+            stage = "translation"
+        elif event["type"] == "stage":
+            stage = event.get("stage")
+        elif event["type"] == "narrating":
+            narrating = {"done": event.get("done", 0), "total": event.get("total", 0)}
+    if runner.is_running():
+        state_name = "running"
+    elif runner.error:
+        state_name = "failed"
+    elif runner.result is None:
+        state_name = "idle"
+    elif runner.result.cancelled:
+        state_name = "cancelled"
+    else:
+        state_name = "finished"
+    result = None
+    if runner.result is not None and not runner.result.cancelled:
+        run_result = runner.result
+        folder = Path(run_result.output_dir)
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8")) if (folder / "manifest.json").is_file() else {}
+        stem = Path(manifest.get("epub", meta.get("filename", "book.epub"))).stem
+        summary = _qa_summary(folder)
+        result = {
+            "epub": _file_url(meta.get("book_id"), f"{stem}.kn.epub", app.state.app_token) if run_result.epub_path else None,
+            "qa_report": _file_url(meta.get("book_id"), "qa_report.json", app.state.app_token) if run_result.qa_report_path else None,
+            "audiobook": _file_url(meta.get("book_id"), f"{stem}.kn.wav", app.state.app_token) if run_result.audiobook_path else None,
+            "qa_summary": summary,
+        }
+    return {
+        "state": state_name,
+        "book_id": meta.get("book_id"),
+        "chapter_index": chapter_index,
+        "chapter_total": chapter_total,
+        "current_chapter_title": chapter_title,
+        "stage": stage,
+        "narrating": narrating,
+        "elapsed_seconds": max(0, int(time.time() - meta["started"])) if meta.get("started") else 0,
+        "log_tail": runner.log_tail(200),
+        "error": runner.error,
+        "result": result,
+    }
+
+
+def _file_url(book_id: str | None, name: str, token: str) -> str:
+    return f"/api/library/{quote(book_id or '', safe='')}/files/{quote(name, safe='')}?token={quote(token, safe='')}"
+
+
+def main(argv: list[str] | None = None) -> None:
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="Kannada Book Translator")
+    parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument("--no-browser", action="store_true")
+    args = parser.parse_args(argv)
+    port = args.port
+    while True:
+        with socket.socket() as probe:
+            try:
+                probe.bind(("127.0.0.1", port))
+                break
+            except OSError:
+                port += 1
+    app = create_app(port=port)
+    if not args.no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(0.6, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")

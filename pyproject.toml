@@ -20,17 +20,18 @@ dependencies = [
 ]
 
 [project.scripts]
-kannada-translator = "kannada_epub.app.ui:main"
+kannada-translator = "kannada_epub.app.server:main"
 
 [project.optional-dependencies]
-# Pinned as a set (verified together): gradio 6 pulls huggingface-hub v1
-# which breaks transformers (local TTS), while newer fastapi/starlette/
-# pydantic break gradio 4's startup health-check. Install with: pip install -e .[gui]
+# The custom app needs FastAPI, Uvicorn and multipart upload support. Keep the
+# legacy Gradio dependencies available to scripts/gui.py as well.
 gui = [
     "gradio>=4,<5",
     "huggingface_hub<1.0",
     "fastapi==0.115.*",
     "starlette==0.41.*",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
 ]
 # Local (on-device) translation/TTS/QA models. Cloud-only installs do not need
 # these; install them with: pip install -e .[local]
@@ -46,3 +47,9 @@ local = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+kannada_epub = ["app/static/*.html", "app/static/*.css", "app/static/*.js"]
+
+[tool.setuptools.data-files]
+"assets/fonts" = ["assets/fonts/NotoSansKannada-Regular.ttf", "assets/fonts/NotoSansKannada-Bold.ttf"]

@@ -107,7 +107,11 @@ def load_epub_chapters(
 
         soup = BeautifulSoup(item.get_content(), "lxml")
         title_tag = soup.find(["h1", "h2", "title"])
-        title = title_tag.get_text(strip=True) if title_tag else None
+        title = (
+            " ".join(title_tag.get_text(" ", strip=True).split())
+            if title_tag
+            else None
+        )
 
         paragraphs = []
         for i, tag in enumerate(soup.find_all(BLOCK_TAGS)):
