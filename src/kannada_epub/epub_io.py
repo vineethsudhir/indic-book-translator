@@ -35,11 +35,18 @@ def load_epub_chapters(
 ) -> list[Chapter]:
     """Extract reading-order chapters as plain paragraph text.
 
-    Deliberately minimal: no DOM/attribute preservation, no table extraction,
-    no reassembly back into an .epub — just enough structure (chapter ->
-    ordered paragraphs) to translate and review. Full AST-preserving
-    extraction (FR-1.3), table handling (FR-3.2), and EPUB repackaging (FR-5)
-    are separate, heavier pieces of work for later.
+    Deliberately minimal: no DOM/attribute preservation and no table
+    extraction — just enough structure (chapter -> ordered paragraphs) to
+    translate and review. Reassembly back into an .epub now lives in
+    `kannada_epub.epub_writer`, which re-reads the source with this same
+    parse (and same block enumeration) so a `Paragraph.index` maps back to
+    its element. Full AST-preserving extraction (FR-1.3) and table handling
+    (FR-3.2) remain separate, heavier pieces of work for later.
+
+    A block tag that itself contains a block tag (e.g.
+    ``<blockquote><p>…</p></blockquote>``) is skipped, so its text is not
+    emitted twice; ``enumerate`` still advances over the skipped tag, keeping
+    the index of every other paragraph stable for the writer.
 
     Reading order comes from the spine (not manifest iteration order), since
     the spine is what the EPUB spec actually guarantees reflects intended
@@ -69,6 +76,11 @@ def load_epub_chapters(
 
         paragraphs = []
         for i, tag in enumerate(soup.find_all(BLOCK_TAGS)):
+            # A block nested inside another block would otherwise be extracted
+            # twice (once as the parent's text, once as its own). Skip it, but
+            # keep enumerate() advancing so all other indices are unchanged.
+            if tag.find(BLOCK_TAGS) is not None:
+                continue
             text = " ".join(tag.get_text().split())
             if len(text) >= min_paragraph_chars:
                 paragraphs.append(Paragraph(i, text))
