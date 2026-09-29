@@ -16,7 +16,11 @@ dependencies = [
     "numpy>=1.26",
     "soundfile>=0.12",
     "python-dotenv>=1.0",
+    "platformdirs>=4",
 ]
+
+[project.scripts]
+kannada-translator = "kannada_epub.app.ui:main"
 
 [project.optional-dependencies]
 # Pinned as a set (verified together): gradio 6 pulls huggingface-hub v1
