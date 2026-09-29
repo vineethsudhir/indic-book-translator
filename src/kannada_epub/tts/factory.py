@@ -1,14 +1,26 @@
 from ..config import TTSModelConfig, resolve_api_key
 from .base import TTSProvider
 from .cloud import OpenAICompatibleTTSProvider, SarvamTTSProvider
-from .engine import IndicParlerTTSEngine
 
 
 def build_tts_provider(config: TTSModelConfig, local_model_dir: str | None = None) -> TTSProvider:
     if config.provider == "parler_local":
         if not local_model_dir:
             raise ValueError("'local_model_dir' is required for parler_local TTS")
-        return IndicParlerTTSEngine(model_dir=local_model_dir)
+
+        # Imported here, not at module top: the local engine needs the optional
+        # ML stack (torch/transformers/parler_tts), absent from cloud-only
+        # installs. Turn a missing dependency into an actionable error.
+        try:
+            from .engine import IndicParlerTTSEngine
+
+            return IndicParlerTTSEngine(model_dir=local_model_dir)
+        except ImportError as exc:
+            raise RuntimeError(
+                "TTS with provider 'parler_local' needs the local ML dependencies "
+                "(torch, transformers, parler_tts). Install them with: "
+                'pip install -e ".[local]"'
+            ) from exc
 
     if config.provider == "sarvam":
         api_key = resolve_api_key(config.api_key_env or "SARVAM_API_KEY")

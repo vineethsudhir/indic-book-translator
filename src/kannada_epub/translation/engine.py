@@ -1,10 +1,6 @@
 import re
 from pathlib import Path
 
-import ctranslate2
-import sentencepiece as spm
-from IndicTransToolkit.processor import IndicProcessor
-
 from .base import TranslationProvider
 
 # Best-effort sentence splitting for the languages we translate from. English
@@ -149,6 +145,12 @@ class IndicTrans2Engine(TranslationProvider):
         max_content_tokens: int = 200,
         max_decoding_length: int = 256,
     ):
+        # Imported here, not at module top, so that importing this module (and
+        # the cloud-only pipeline) does not require the optional local ML stack.
+        import ctranslate2
+        import sentencepiece as spm
+        from IndicTransToolkit.processor import IndicProcessor
+
         self._processor = IndicProcessor(inference=True)
         self._sp_src = spm.SentencePieceProcessor(model_file=str(spm_src_path))
         self._sp_tgt = spm.SentencePieceProcessor(model_file=str(spm_tgt_path))

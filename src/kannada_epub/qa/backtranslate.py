@@ -71,15 +71,26 @@ class LocalBackTranslator(BackTranslator):
 
         # Imported here (not at module top) so nothing imports ctranslate2 /
         # IndicTransToolkit until a local back-translator is actually built.
-        from ..translation.engine import IndicTrans2Engine
+        # Raise an actionable error when those optional deps are absent. The
+        # construction is inside the same try because the engine imports its
+        # heavy deps in __init__.
+        try:
+            from ..translation.engine import IndicTrans2Engine
 
-        self._engine = IndicTrans2Engine(
-            ct2_model_dir=model_dir,
-            spm_src_path=model_dir / "vocab" / "model.SRC",
-            spm_tgt_path=model_dir / "vocab" / "model.TGT",
-            device="cpu",
-            compute_type="int8",
-        )
+            self._engine = IndicTrans2Engine(
+                ct2_model_dir=model_dir,
+                spm_src_path=model_dir / "vocab" / "model.SRC",
+                spm_tgt_path=model_dir / "vocab" / "model.TGT",
+                device="cpu",
+                compute_type="int8",
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "QA back-translation with 'indictrans2_local' needs the local ML "
+                "dependencies (ctranslate2, sentencepiece, IndicTransToolkit, "
+                "huggingface_hub, torch, transformers). Install them with: "
+                'pip install -e ".[local]"'
+            ) from exc
 
     def back_translate(self, kannada: list[str]) -> list[str]:
         if not kannada:

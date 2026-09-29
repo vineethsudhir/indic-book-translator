@@ -1,9 +1,6 @@
 import re
 
 import numpy as np
-import torch
-from parler_tts import ParlerTTSForConditionalGeneration
-from transformers import AutoTokenizer
 
 from .base import TTSProvider
 
@@ -67,6 +64,13 @@ class IndicParlerTTSEngine(TTSProvider):
     """
 
     def __init__(self, model_dir, device: str | None = None):
+        # Imported here, not at module top, so that importing this module does
+        # not require the optional local ML stack (torch/transformers/parler_tts).
+        import torch
+        from parler_tts import ParlerTTSForConditionalGeneration
+        from transformers import AutoTokenizer
+
+        self._torch = torch
         self.device = device or ("mps" if torch.backends.mps.is_available() else "cpu")
         self._model = ParlerTTSForConditionalGeneration.from_pretrained(str(model_dir)).to(self.device)
         self._tokenizer = AutoTokenizer.from_pretrained(str(model_dir))
@@ -92,7 +96,7 @@ class IndicParlerTTSEngine(TTSProvider):
             prompt_input_ids=prompt_ids.input_ids,
             prompt_attention_mask=prompt_ids.attention_mask,
         )
-        audio = generation.to(torch.float32).cpu().numpy().squeeze()
+        audio = generation.to(self._torch.float32).cpu().numpy().squeeze()
         peak = np.abs(audio).max()
         # Per-chunk peak normalization so chunk boundaries within a paragraph
         # don't carry an audible volume jump — separate generate() calls have

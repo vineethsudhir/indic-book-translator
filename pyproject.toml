@@ -13,15 +13,8 @@ dependencies = [
     "EbookLib>=0.18",
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
-    "ctranslate2>=4.8",
-    "sentencepiece>=0.2",
-    "IndicTransToolkit>=1.1",
-    "huggingface_hub>=0.25",
-    "torch>=2.0",
-    "transformers>=4.40,<5",
     "numpy>=1.26",
     "soundfile>=0.12",
-    "parler_tts>=0.2",
     "python-dotenv>=1.0",
 ]
 
@@ -34,6 +27,17 @@ gui = [
     "huggingface_hub<1.0",
     "fastapi==0.115.*",
     "starlette==0.41.*",
+]
+# Local (on-device) translation/TTS/QA models. Cloud-only installs do not need
+# these; install them with: pip install -e .[local]
+local = [
+    "ctranslate2>=4.8",
+    "sentencepiece>=0.2",
+    "IndicTransToolkit>=1.1",
+    "huggingface_hub>=0.25",
+    "torch>=2.0",
+    "transformers>=4.40,<5",
+    "parler_tts>=0.2",
 ]
 
 [tool.setuptools.packages.find]

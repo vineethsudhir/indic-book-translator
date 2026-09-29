@@ -74,6 +74,10 @@ td, th {
   line-height: 1.5em;
   vertical-align: top;
 }
+
+.qa-review-flag {
+  background-color: #fff3cd;
+}
 """
 
 
@@ -172,18 +176,24 @@ def _serialize_xhtml(original: bytes, soup: BeautifulSoup) -> bytes:
 
 
 def _translate_document(
-    content: bytes, translations_by_index: dict[int, str], css_href: str
+    content: bytes,
+    translations_by_index: dict[int, str],
+    css_href: str,
+    flagged_indices: set[int] | frozenset[int] = frozenset(),
 ) -> bytes:
     soup = BeautifulSoup(content, "lxml")
     blocks = soup.find_all(BLOCK_TAGS)
 
-    for index, text in sorted(translations_by_index.items()):
+    def _element_at(index: int):
         if index < 0 or index >= len(blocks):
             raise ValueError(
                 f"paragraph index {index} out of range for document "
                 f"({len(blocks)} block elements)"
             )
-        element = blocks[index]
+        return blocks[index]
+
+    for index, text in sorted(translations_by_index.items()):
+        element = _element_at(index)
 
         # Keep anchors/id-bearing descendants alive (TOC targets), emptied of
         # text, then replace the rest of the element's contents.
@@ -195,6 +205,13 @@ def _translate_document(
         for anchor in preserved:
             element.append(anchor)
         element.append(text)
+
+    # QA review flags: append the class so we never clobber an existing one.
+    for index in sorted(flagged_indices):
+        element = _element_at(index)
+        classes = element.get("class") or []
+        if "qa-review-flag" not in classes:
+            element["class"] = [*classes, "qa-review-flag"]
 
     if soup.html is not None:
         soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
@@ -250,14 +267,19 @@ def write_translated_epub(
     output_path: str | Path,
     *,
     font_dir: str | Path | None = None,
+    flagged: dict[str, set[int]] | None = None,
 ) -> None:
     """Repackage ``source_epub`` with translated paragraphs replaced in place.
 
     ``translations`` maps chapter id -> {``Paragraph.index``: Kannada text}.
+    ``flagged`` optionally maps chapter id -> the set of ``Paragraph.index``
+    values to mark with the ``qa-review-flag`` CSS class (QA flagged them for
+    human review).
     """
     source_epub = Path(source_epub)
     output_path = Path(output_path)
     font_dir = Path(font_dir) if font_dir is not None else _default_font_dir()
+    flagged_by_chapter = {cid: set(indices) for cid, indices in (flagged or {}).items()}
 
     font_bytes: dict[str, bytes] = {}
     for filename, _media_type in _FONT_FILES:
@@ -280,7 +302,8 @@ def write_translated_epub(
         css_zip_path = posixpath.join(opf_dir, css_rel)
 
         modified_docs: dict[str, bytes] = {}
-        for chapter_id, by_index in translations.items():
+        for chapter_id in sorted(set(translations) | set(flagged_by_chapter)):
+            by_index = translations.get(chapter_id, {})
             item = manifest.get(chapter_id)
             if item is None:
                 raise ValueError(
@@ -297,7 +320,10 @@ def write_translated_epub(
             doc_dir = posixpath.dirname(doc_path)
             css_href = posixpath.relpath(css_zip_path, doc_dir or ".")
             modified_docs[doc_path] = _translate_document(
-                source_data[doc_path], by_index, css_href
+                source_data[doc_path],
+                by_index,
+                css_href,
+                flagged_by_chapter.get(chapter_id, frozenset()),
             )
 
         added_items: list[tuple[str, str, str]] = [

@@ -21,8 +21,15 @@ class LocalMiniLMEmbedder(Embedder):
         batch_size: int = _DEFAULT_BATCH_SIZE,
         max_tokens: int = _DEFAULT_MAX_TOKENS,
     ):
-        import torch
-        from transformers import AutoModel, AutoTokenizer
+        try:
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "QA embedding with 'local_minilm' needs the local ML dependencies "
+                "(torch, transformers). Install them with: "
+                'pip install -e ".[local]"'
+            ) from exc
 
         self._torch = torch
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
