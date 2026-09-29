@@ -66,19 +66,22 @@ or press **Open output folder**.
 with each paragraph's QA status; tick *Show only flagged/retry* to see the
 ones worth checking by hand.
 
-**Where your files are.** Settings, keys, uploaded books and outputs live in a
-per-user folder, one sub-folder per book under `outputs/`:
+**Where your files are.** Translated books go to your Documents folder:
+`Documents/KannadaBookTranslator/outputs/<book name>/` (uploaded originals in
+`Documents/KannadaBookTranslator/books/`). The app's **Open output folder**
+button takes you straight there.
 
-| OS | Folder |
+Settings, API keys and the glossary database are app-private and live in the
+OS's app-data folder instead:
+
+| OS | App-data folder |
 |---|---|
-| macOS | `~/Library/Application Support/KannadaBookTranslator` |
+| macOS | `~/Library/Application Support/KannadaBookTranslator` (hidden in Finder) |
 | Windows | `%LOCALAPPDATA%\KannadaBookTranslator` |
 | Linux | `~/.local/share/KannadaBookTranslator` |
 
-On macOS `~/Library` is hidden in Finder and the path contains a space, so use
-the app's **Open output folder** button, or:
-`open "$HOME/Library/Application Support/KannadaBookTranslator/outputs"`.
-Set `KANNADA_APP_DATA_DIR` to use a different folder.
+Set `KANNADA_DOCUMENTS_DIR` to put books and outputs somewhere else, or
+`KANNADA_APP_DATA_DIR` to move the app-data folder.
 
 **QA check.** QA translates the Kannada back to English and compares it with
 the original: ≥ 0.85 similarity passes, 0.70–0.85 gets one automatic
@@ -188,7 +191,7 @@ front/back matter ids there if you don't want them translated.
 ### Outputs
 
 ```
-data/book_output/              (app: <data folder>/outputs/<book name>/)
+data/book_output/              (app: Documents/KannadaBookTranslator/outputs/<book name>/)
   <book>.kn.epub               the translated book — original layout, images and
                                links kept, Noto Sans Kannada embedded
   qa_report.json               QA scores + status per paragraph (when QA is on)
@@ -341,8 +344,9 @@ Notes:
   model doesn't match the backend. For `local_minilm` use
   `sentence-transformers/all-MiniLM-L6-v2`; for `openai_compatible` use the
   API's model name (`text-embedding-3-small`, `nomic-embed-text`, …).
-- **Can't find the output files** — use **Open output folder** in the app;
-  see *Where your files are* above.
+- **Can't find the output files** — they're in
+  `Documents/KannadaBookTranslator/outputs/`; **Open output folder** in the
+  app opens it.
 - **Browser didn't open / can't connect** — go to http://127.0.0.1:7860
   yourself while the terminal running the app is still open; if the port is
   taken, start with `python -m kannada_epub.app --port 7861`.

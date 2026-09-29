@@ -1,10 +1,17 @@
-"""Per-user data directory and file locations for the app.
+"""Per-user file locations for the app. Nothing lives inside the repository,
+which will be read-only once this is packaged as a desktop app.
 
-All user state (settings, secrets, uploaded books, translation outputs and the
-glossary DB) lives under a single per-user data directory chosen by the OS --
-never inside the repository, which will be read-only once this is packaged as a
-desktop app. ``KANNADA_APP_DATA_DIR`` overrides the location (tests use a temp
-directory).
+Two places, split by who needs to find the files:
+- App-private state (settings, API keys, glossary DB) goes in the OS's app
+  data directory (e.g. ~/Library/Application Support on macOS), where users
+  don't browse and keys stay out of the way.
+- User-facing files (uploaded books and translation outputs) go in
+  Documents/KannadaBookTranslator, where people expect to find their work.
+
+``KANNADA_DOCUMENTS_DIR`` overrides the Documents location.
+``KANNADA_APP_DATA_DIR`` overrides the data directory and, unless
+``KANNADA_DOCUMENTS_DIR`` is also set, puts books/outputs under it too, so
+tests stay inside one temp directory.
 """
 
 from __future__ import annotations
@@ -41,14 +48,27 @@ def editor_config_path() -> Path:
     return data_dir() / "editor.yaml"
 
 
+def documents_dir() -> Path:
+    """Return (and create) the user-visible folder for books and outputs."""
+    override = os.environ.get("KANNADA_DOCUMENTS_DIR")
+    if override:
+        base = Path(override)
+    elif os.environ.get("KANNADA_APP_DATA_DIR"):
+        base = data_dir()
+    else:
+        base = Path(platformdirs.user_documents_dir()) / APP_NAME
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def books_dir() -> Path:
-    path = data_dir() / "books"
+    path = documents_dir() / "books"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def outputs_dir() -> Path:
-    path = data_dir() / "outputs"
+    path = documents_dir() / "outputs"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
