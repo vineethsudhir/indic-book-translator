@@ -86,7 +86,7 @@ class IndicParlerTTSEngine(TTSProvider):
             f"close-sounding and high quality, with no background noise."
         )
 
-    def _synthesize_chunk(self, text: str, voice: str, emotion: str) -> np.ndarray:
+    def _generate(self, text: str, voice: str, emotion: str) -> np.ndarray:
         description = self._description_for(voice, emotion)
         desc_ids = self._description_tokenizer(description, return_tensors="pt").to(self.device)
         prompt_ids = self._tokenizer(text, return_tensors="pt").to(self.device)
@@ -96,8 +96,23 @@ class IndicParlerTTSEngine(TTSProvider):
             prompt_input_ids=prompt_ids.input_ids,
             prompt_attention_mask=prompt_ids.attention_mask,
         )
-        audio = generation.to(self._torch.float32).cpu().numpy().squeeze()
-        peak = np.abs(audio).max()
+        # reshape, not squeeze: generation is sampled, and on short prompts it
+        # sometimes stops at once and returns shape (1, 1) — squeeze() turns
+        # that into a 0-d array that np.concatenate rejects (verified on "I.",
+        # 1 of 6 runs).
+        return generation.to(self._torch.float32).cpu().numpy().reshape(-1)
+
+    def _synthesize_chunk(
+        self, text: str, voice: str, emotion: str, max_attempts: int = 3
+    ) -> np.ndarray:
+        # A near-empty generation is a sampling failure, not real speech;
+        # regenerate so short paragraphs (chapter numerals, titles) aren't lost.
+        min_samples = int(0.1 * self.sampling_rate)
+        for _ in range(max_attempts):
+            audio = self._generate(text, voice, emotion)
+            if audio.size >= min_samples:
+                break
+        peak = np.abs(audio).max() if audio.size else 0.0
         # Per-chunk peak normalization so chunk boundaries within a paragraph
         # don't carry an audible volume jump — separate generate() calls have
         # no shared loudness reference.

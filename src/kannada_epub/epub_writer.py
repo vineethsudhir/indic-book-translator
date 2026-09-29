@@ -379,6 +379,9 @@ def write_translated_epub(
                 out_info.compress_type = zipfile.ZIP_DEFLATED
                 zout.writestr(out_info, data)
 
+        # mkstemp creates the file 0600; give the finished book normal
+        # permissions so other apps and users can open it like any document.
+        os.chmod(tmp_name, 0o644)
         os.replace(tmp_name, output_path)
     except BaseException:
         if os.path.exists(tmp_name):

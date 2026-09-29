@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import soundfile as sf
@@ -13,6 +14,7 @@ def build_audiobook(
     tts_engine: TTSProvider,
     output_path: str | Path,
     paragraph_gap_s: float = 0.6,
+    progress: Callable[[str], None] = print,
 ) -> Path:
     """Narrate every edited paragraph across `batches`, in order, as one
     continuous audiobook file. Each paragraph is synthesized with its own
@@ -26,7 +28,7 @@ def build_audiobook(
     for batch in batches:
         for text, emotion in zip(batch.edited_kannada, batch.edited_emotions):
             done += 1
-            print(f"  [{done}/{total}] ({emotion}) {text[:40]}...")
+            progress(f"  narrating [{done}/{total}] ({emotion}) {text[:40]}...")
             pieces.append(tts_engine.synthesize_paragraph(text, voice, emotion))
             pieces.append(gap)
 

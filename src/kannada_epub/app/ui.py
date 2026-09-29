@@ -225,6 +225,26 @@ def _latest_output_dir() -> Path | None:
     return max(candidates, key=lambda path: (path / "chapters").stat().st_mtime)
 
 
+def open_output_folder() -> str:
+    """Reveal the latest book's outputs in Finder / Explorer. The data dir
+    lives under hidden, space-containing paths (e.g. ~/Library/Application
+    Support on macOS) that are awkward to reach by hand."""
+    import subprocess
+    import sys
+
+    folder = _latest_output_dir() or outputs_dir()
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(folder)], check=True)
+        elif sys.platform == "win32":
+            os.startfile(str(folder))  # type: ignore[attr-defined]
+        else:
+            subprocess.run(["xdg-open", str(folder)], check=True)
+    except Exception as exc:
+        return f"Couldn't open the folder ({exc}). It is at: {folder}"
+    return f"Opened {folder}"
+
+
 def list_chapters() -> list[str]:
     out = _latest_output_dir()
     if out is None:
@@ -500,6 +520,8 @@ def build_app() -> gr.Blocks:
                 out_epub = gr.File(label="Translated EPUB")
                 out_qa = gr.File(label="QA report")
                 out_audio = gr.File(label="Audiobook")
+            open_btn = gr.Button("Open output folder")
+            open_btn.click(open_output_folder, outputs=run_status)
             translate_btn.click(
                 run_translation,
                 inputs=[epub_file, run_qa, build_audio, preview_n],

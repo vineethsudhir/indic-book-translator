@@ -383,6 +383,7 @@ def run_book(
             voice=cfg.tts.voice,
             tts_engine=components.tts,
             output_path=audiobook_path,
+            progress=progress,
         )
         progress(f"Wrote audiobook: {audiobook_path}")
 
