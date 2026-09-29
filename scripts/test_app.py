@@ -188,7 +188,7 @@ def test_runner(settings: AppSettings) -> None:
     assert result is not None
     assert result.cancelled is False
     assert result.epub_path is not None and Path(result.epub_path).exists()
-    assert Path(result.epub_path).name == "sherlock_holmes.kn.epub"
+    assert Path(result.epub_path).name == "sherlock_holmes.kn.preview.epub"
 
     # A second start while running is refused.
     slow = SlowFakeTranslationEngine()

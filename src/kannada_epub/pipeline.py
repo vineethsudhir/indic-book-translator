@@ -97,6 +97,36 @@ def _checkpoint_to_batch(data: dict) -> TranslatedBatch:
     return TranslatedBatch(**data)
 
 
+def _matching_checkpoints(
+    checkpoints_dir: Path, chapter: Chapter, batch_size: int
+) -> list[TranslatedBatch] | None:
+    """The chapter's saved batches, only if they cover exactly the paragraphs
+    being translated now; otherwise None (re-translate the chapter).
+
+    A checkpoint's file name only encodes its start position, so a batch saved
+    by a preview run (e.g. 2 paragraphs) has the same name as the first batch
+    of a full run. Matching the span and source text keeps a resume from
+    splicing preview output into a full book.
+    """
+    n = len(chapter.paragraphs)
+    batches: list[TranslatedBatch] = []
+    for start in _expected_starts(n, batch_size):
+        path = checkpoints_dir / _batch_key(chapter.id, start)
+        if not path.exists():
+            return None
+        batch = _checkpoint_to_batch(_load_checkpoint(path))
+        end = min(start + batch_size, n)
+        expected_source = [p.text for p in chapter.paragraphs[start:end]]
+        if (
+            (batch.paragraph_start, batch.paragraph_end) != (start, end)
+            or batch.source_english != expected_source
+            or len(batch.edited_kannada) != end - start
+        ):
+            return None
+        batches.append(batch)
+    return batches or None
+
+
 def _write_checkpoint(checkpoints_dir: Path, batch: TranslatedBatch) -> None:
     (checkpoints_dir / _batch_key(batch.chapter_id, batch.paragraph_start)).write_text(
         json.dumps(asdict(batch), ensure_ascii=False, indent=2), encoding="utf-8"
@@ -147,8 +177,24 @@ def build_components(
 # ---------------------------------------------------------------------------
 # QA
 # ---------------------------------------------------------------------------
+def output_file_names(epub_stem: str, preview: bool) -> tuple[str, str]:
+    """(EPUB, audiobook) file names for a run's outputs.
+
+    Previews get their own names so a partly translated book is never mistaken
+    for the whole one (untranslated paragraphs stay English in the EPUB).
+    """
+    suffix = ".kn.preview" if preview else ".kn"
+    return f"{epub_stem}{suffix}.epub", f"{epub_stem}{suffix}.wav"
+
+
 def _assign_edited(batches: list[TranslatedBatch], edited: list[str]) -> None:
     """Distribute a chapter-flat ``edited`` list back into its batches."""
+    expected = sum(batch.paragraph_end - batch.paragraph_start for batch in batches)
+    if len(edited) != expected:
+        raise ValueError(
+            f"Refusing to misalign: {len(edited)} edited paragraphs for {expected} "
+            "translated paragraphs"
+        )
     offset = 0
     for batch in batches:
         count = batch.paragraph_end - batch.paragraph_start
@@ -176,15 +222,20 @@ def _run_chapter_qa(
     assert components.qa is not None
     back_translator, embedder = components.qa
     cache_path = _qa_cache_path(output_dir, chapter.id)
+    source_english = [text for batch in batches for text in batch.source_english]
 
+    # Reuse cached QA only for exactly the same English paragraphs: a cache
+    # from an earlier preview (fewer paragraphs) or an older run of different
+    # text must be recomputed, or its Kannada would overwrite the wrong slots.
     if cache_path.exists():
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
-        results = [QAResult(**item) for item in payload["results"]]
-        _assign_edited(batches, list(payload["kannada"]))
-        progress(f"[{chapter.id}] QA: resumed {len(results)} results from cache")
-        return results
+        if payload.get("source_english") == source_english:
+            results = [QAResult(**item) for item in payload["results"]]
+            _assign_edited(batches, list(payload["kannada"]))
+            progress(f"[{chapter.id}] QA: resumed {len(results)} results from cache")
+            return results
+        progress(f"[{chapter.id}] QA: cache is for different paragraphs; re-checking")
 
-    source_english = [text for batch in batches for text in batch.source_english]
     edited = [text for batch in batches for text in batch.edited_kannada]
     paragraph_indices = [p.index for p in chapter.paragraphs]
 
@@ -227,7 +278,11 @@ def _run_chapter_qa(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text(
         json.dumps(
-            {"results": [asdict(r) for r in results], "kannada": edited},
+            {
+                "source_english": source_english,
+                "results": [asdict(r) for r in results],
+                "kannada": edited,
+            },
             ensure_ascii=False,
             indent=2,
         ),
@@ -273,6 +328,10 @@ def run_book(
     if limit_chapters:
         wanted = set(limit_chapters)
         chapters = [c for c in chapters if c.id in wanted]
+    total_paragraphs = {c.id: len(c.paragraphs) for c in chapters}
+    is_preview = max_paragraphs is not None and any(
+        count > max_paragraphs for count in total_paragraphs.values()
+    )
     if max_paragraphs is not None:
         for chapter in chapters:
             chapter.paragraphs = chapter.paragraphs[:max_paragraphs]
@@ -299,7 +358,14 @@ def run_book(
         register=cfg.tone_register,
     )
 
-    manifest: dict = {"epub": str(epub_path), "chapters": [], "skipped": []}
+    manifest: dict = {
+        "epub": str(epub_path),
+        "preview": is_preview,
+        "paragraphs_translated": 0,
+        "paragraphs_total": 0,
+        "chapters": [],
+        "skipped": [],
+    }
     all_batches: list[TranslatedBatch] = []
     all_results: list[QAResult] = []
     cancelled = False
@@ -310,9 +376,8 @@ def run_book(
             progress(f"[{chapter.id}] cancelled before processing")
             break
 
-        starts = _expected_starts(len(chapter.paragraphs), batch_size)
-        cached = [checkpoints_dir / _batch_key(chapter.id, s) for s in starts]
-        resumed = bool(cached and all(p.exists() for p in cached))
+        batches = _matching_checkpoints(checkpoints_dir, chapter, batch_size)
+        resumed = batches is not None
         emit({
             "type": "chapter",
             "id": chapter.id,
@@ -320,8 +385,7 @@ def run_book(
             "total": len(chapters),
             "resumed": resumed,
         })
-        if resumed:
-            batches = [_checkpoint_to_batch(_load_checkpoint(p)) for p in cached]
+        if batches is not None:
             progress(f"[{chapter.id}] resume: {len(batches)} batches from checkpoints")
             manifest["skipped"].append(chapter.id)
         else:
@@ -344,8 +408,15 @@ def run_book(
         (chapters_dir / f"{chapter.id}.json").write_text(
             json.dumps(chapter_out, ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        manifest["chapters"].append(
-            {"id": chapter.id, "title": chapter.title, "paragraphs": len(chapter.paragraphs)}
+        manifest["chapters"].append({
+            "id": chapter.id,
+            "title": chapter.title,
+            "paragraphs": len(chapter.paragraphs),
+            "total_paragraphs": total_paragraphs[chapter.id],
+        })
+        manifest["paragraphs_translated"] = sum(c["paragraphs"] for c in manifest["chapters"])
+        manifest["paragraphs_total"] = sum(
+            c["total_paragraphs"] for c in manifest["chapters"]
         )
         all_batches.extend(batches)
 
@@ -391,14 +462,16 @@ def run_book(
         for result in all_results:
             if result.status == FLAGGED_FOR_REVIEW:
                 flagged.setdefault(result.chapter, set()).add(result.paragraph_index)
-        epub_out_path = output_dir / f"{epub_path.stem}.kn.epub"
+        epub_name, _ = output_file_names(epub_path.stem, is_preview)
+        epub_out_path = output_dir / epub_name
         write_translated_epub(epub_path, translations, epub_out_path, flagged=flagged)
         progress(f"Wrote translated EPUB: {epub_out_path}")
 
     audiobook_path: Path | None = None
     if options.build_audiobook and components.tts is not None:
         emit({"type": "stage", "stage": "audiobook"})
-        audiobook_path = output_dir / f"{epub_path.stem}.kn.wav"
+        _, audio_name = output_file_names(epub_path.stem, is_preview)
+        audiobook_path = output_dir / audio_name
         build_audiobook(
             batches=all_batches,
             voice=cfg.tts.voice,

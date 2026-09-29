@@ -238,9 +238,16 @@ async def upload_and_translate(devtools: DevTools) -> tuple[str, str]:
     await wait_for_value(
         devtools,
         "document.querySelector('.result-card h2')?.innerText || ''",
-        lambda value: value == "Your Kannada book is ready",
+        lambda value: value == "Your preview is ready",
         timeout=120,
     )
+    # A preview must say how much was translated, so it isn't mistaken for
+    # the whole book (untranslated paragraphs stay English in the EPUB).
+    card_text = await devtools.evaluate(
+        "document.querySelector('.result-card')?.innerText || ''"
+    )
+    assert "Preview:" in card_text and "paragraphs translated" in card_text, card_text
+    assert "stays in English" in card_text, card_text
     devtools.assert_no_browser_errors("upload and translation")
     return await get_library_book(devtools)
 

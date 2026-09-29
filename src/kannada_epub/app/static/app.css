@@ -259,6 +259,11 @@ h3 {
   color: var(--muted);
   font-size: 13px;
 }
+.book-info .preview-note {
+  margin-top: 4px;
+  color: var(--warning);
+  font-weight: 600;
+}
 .book-card .button {
   flex: none;
 }

@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from ..epub_io import load_epub_chapters
-from ..pipeline import PipelineComponents, RunOptions
+from ..pipeline import PipelineComponents, RunOptions, output_file_names
 from .paths import books_dir, outputs_dir
 from .runner import BookRun
 from .settings import (
@@ -111,6 +111,43 @@ def _source_titles(folder: Path, manifest: dict) -> dict[str, str]:
         }
     except Exception:
         return {}
+
+
+def _book_outputs(folder: Path, manifest: dict) -> dict:
+    """Output file names and translation coverage for one book folder.
+
+    Manifests written before previews were labelled lack "preview" and
+    "paragraphs_total"; for those the total is counted from the source EPUB,
+    so an old preview isn't presented as a finished book.
+    """
+    stem = Path(manifest.get("epub", folder.name)).stem
+    chapters = manifest.get("chapters", [])
+    translated = int(manifest.get("paragraphs_translated", sum(c.get("paragraphs", 0) for c in chapters)))
+    total = manifest.get("paragraphs_total")
+    if total is None:
+        total = translated
+        source = _source_epub(folder, manifest)
+        if source is not None:
+            try:
+                wanted = {c.get("id") for c in chapters}
+                source_chapters = load_epub_chapters(source, exclude_ids=load_settings().exclude_ids)
+                total = sum(len(c.paragraphs) for c in source_chapters if c.id in wanted) or translated
+            except Exception:
+                pass
+    preview = bool(manifest.get("preview", translated < total))
+    epub_name, audio_name = output_file_names(stem, preview)
+    # Older runs always wrote .kn.* names; fall back to them when present.
+    if not (folder / epub_name).is_file() and (folder / f"{stem}.kn.epub").is_file():
+        epub_name = f"{stem}.kn.epub"
+    if not (folder / audio_name).is_file() and (folder / f"{stem}.kn.wav").is_file():
+        audio_name = f"{stem}.kn.wav"
+    return {
+        "epub": epub_name,
+        "audiobook": audio_name,
+        "preview": preview,
+        "paragraphs_translated": translated,
+        "paragraphs_total": total,
+    }
 
 
 def _book_metadata(folder: Path, manifest: dict) -> tuple[str, str]:
@@ -375,10 +412,8 @@ def create_app(
                 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
-            source_name = Path(manifest.get("epub", folder.name)).name
             title, author = _book_metadata(folder, manifest)
-            epub_name = f"{Path(source_name).stem}.kn.epub"
-            audio_name = f"{Path(source_name).stem}.kn.wav"
+            outputs = _book_outputs(folder, manifest)
             entries.append({
                 "book_id": folder.name,
                 "title": title,
@@ -388,8 +423,11 @@ def create_app(
                 ).isoformat(),
                 "_mtime": manifest_path.stat().st_mtime,
                 "chapters": len(manifest.get("chapters", [])),
-                "has_epub": (folder / epub_name).is_file(),
-                "has_audiobook": (folder / audio_name).is_file(),
+                "has_epub": (folder / outputs["epub"]).is_file(),
+                "has_audiobook": (folder / outputs["audiobook"]).is_file(),
+                "preview": outputs["preview"],
+                "paragraphs_translated": outputs["paragraphs_translated"],
+                "paragraphs_total": outputs["paragraphs_total"],
                 "qa_summary": _qa_summary(folder),
             })
         entries.sort(key=lambda item: item["_mtime"], reverse=True)
@@ -453,7 +491,9 @@ def create_app(
         folder = _safe_book_dir(book_id)
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         stem = Path(manifest.get("epub", book_id)).stem
-        allowed = {f"{stem}.kn.epub", "qa_report.json", f"{stem}.kn.wav"}
+        allowed = {"qa_report.json"}
+        for preview in (False, True):
+            allowed.update(output_file_names(stem, preview))
         if name not in allowed or name not in {p.name for p in folder.iterdir() if p.is_file()}:
             raise HTTPException(404, "File not found")
         return FileResponse(folder / name, filename=name)
@@ -467,7 +507,7 @@ def create_app(
             target = folder
         elif what == "epub":
             manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
-            target = folder / f"{Path(manifest.get('epub', book_id)).stem}.kn.epub"
+            target = folder / _book_outputs(folder, manifest)["epub"]
             if not target.is_file():
                 raise HTTPException(404, "Translated EPUB not found")
         else:
@@ -524,13 +564,18 @@ def _run_status(app: FastAPI) -> dict:
         run_result = runner.result
         folder = Path(run_result.output_dir)
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8")) if (folder / "manifest.json").is_file() else {}
-        stem = Path(manifest.get("epub", meta.get("filename", "book.epub"))).stem
         summary = _qa_summary(folder)
+        book_id = meta.get("book_id")
+        token = app.state.app_token
+        epub, audio = run_result.epub_path, run_result.audiobook_path
         result = {
-            "epub": _file_url(meta.get("book_id"), f"{stem}.kn.epub", app.state.app_token) if run_result.epub_path else None,
-            "qa_report": _file_url(meta.get("book_id"), "qa_report.json", app.state.app_token) if run_result.qa_report_path else None,
-            "audiobook": _file_url(meta.get("book_id"), f"{stem}.kn.wav", app.state.app_token) if run_result.audiobook_path else None,
+            "epub": _file_url(book_id, epub.name, token) if epub else None,
+            "qa_report": _file_url(book_id, "qa_report.json", token) if run_result.qa_report_path else None,
+            "audiobook": _file_url(book_id, audio.name, token) if audio else None,
             "qa_summary": summary,
+            "preview": bool(manifest.get("preview")),
+            "paragraphs_translated": manifest.get("paragraphs_translated"),
+            "paragraphs_total": manifest.get("paragraphs_total"),
         }
     return {
         "state": state_name,

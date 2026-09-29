@@ -431,6 +431,13 @@
     </div>`;
   }
 
+  // "Preview: 24 of 2,538 paragraphs translated."
+  function coverageText(info) {
+    const done = Number(info.paragraphs_translated || 0).toLocaleString();
+    const total = Number(info.paragraphs_total || 0).toLocaleString();
+    return `Preview: ${done} of ${total} paragraphs translated.`;
+  }
+
   function finishedPanel(run) {
     const result = run.result || {};
     const downloads = [
@@ -442,10 +449,16 @@
       ? qaChips(result.qa_summary, `#/library/${encodeURIComponent(run.book_id)}?flagged=1`)
       : "";
 
+    const heading = result.preview ? "Your preview is ready" : "Your Kannada book is ready";
+    const intro = result.preview
+      ? `${coverageText(result)} The rest of the book stays in English. Turn off
+        Quick preview to translate the whole book.`
+      : "Open it in your reading app, or find the files in the output folder.";
+
     return `<div class="card result-card section-gap">
       <div class="result-icon" aria-hidden="true">✓</div>
-      <h2>Your Kannada book is ready</h2>
-      <p>Open it in your reading app, or find the files in the output folder.</p>
+      <h2>${escapeHtml(heading)}</h2>
+      <p>${escapeHtml(intro)}</p>
       ${summary}
       <div class="actions">
         ${result.epub ? button("Open in Books app", "primary", "data-open=epub") : ""}
@@ -577,6 +590,7 @@
         <p>${escapeHtml(book.author || "Unknown author")} · ` +
           `${formatUpdatedAt(book.updated_at)} · ${book.chapters} chapters · ` +
           `${availability}${audiobook}</p>
+        ${book.preview ? `<p class="preview-note">${escapeHtml(coverageText(book))}</p>` : ""}
         ${qa}
       </div>
       <div class="actions">

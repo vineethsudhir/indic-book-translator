@@ -329,6 +329,45 @@ def main() -> None:
         assert cancelled.epub_path is None
         assert not (cancel_dir / "sherlock_holmes.kn.epub").exists()
         assert (cancel_dir / "manifest.json").exists()
+
+        # --- the first run was a preview: labelled as one --------------------
+        assert result.epub_path.name == "sherlock_holmes.kn.preview.epub", result.epub_path
+        manifest = json.loads((tmp / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["preview"] is True
+        assert manifest["paragraphs_translated"] == N_PARAGRAPHS
+        assert manifest["paragraphs_total"] == len(source_item4.paragraphs)
+
+        # --- regression: preview with QA, then a full run in the same folder --
+        # The preview's checkpoint and QA cache share names with the full run's
+        # first batch. They used to be reused, leaving most of the book English.
+        chapter_id = "item6"
+        full_source = source[chapter_id]
+        both_dir = tmp / "preview_then_full"
+        for max_paragraphs in (2, None):
+            run_components, _ = _make_components(both_dir)
+            last = run_book(
+                _make_cfg(both_dir),
+                resolve_path=_resolve,
+                options=RunOptions(
+                    limit_chapters=[chapter_id],
+                    max_paragraphs=max_paragraphs,
+                    batch_size=BATCH_SIZE,
+                ),
+                components=run_components,
+                progress=lambda _msg: None,
+            )
+        assert last.epub_path.name == "sherlock_holmes.kn.epub", last.epub_path
+        full = {c.id: c for c in load_epub_chapters(last.epub_path)}[chapter_id]
+        untranslated = [p.text for p in full.paragraphs if not p.text.startswith("ಕನ್ನಡ")]
+        assert not untranslated, (
+            f"{len(untranslated)} of {len(full.paragraphs)} paragraphs left in English"
+        )
+        assert len(full.paragraphs) == len(full_source.paragraphs)
+        report = json.loads(last.qa_report_path.read_text(encoding="utf-8"))
+        assert report["summary"]["total"] == len(full_source.paragraphs), report["summary"]
+        manifest = json.loads((both_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["preview"] is False
+        assert manifest["paragraphs_translated"] == manifest["paragraphs_total"]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
