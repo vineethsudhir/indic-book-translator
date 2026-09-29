@@ -16,7 +16,6 @@ import time
 import urllib.request
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parent.parent
 EPUB = ROOT / "data" / "sherlock_holmes.epub"
 CHROME_MACOS = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -50,6 +49,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import test_pipeline as pipeline_test  # noqa: E402
 import uvicorn  # noqa: E402
 import websockets  # noqa: E402
+
 from kannada_epub.app.server import create_app  # noqa: E402
 from kannada_epub.consistency_editor import ConsistencyEditor  # noqa: E402
 from kannada_epub.glossary import GlossaryStore  # noqa: E402
@@ -345,7 +345,7 @@ async def run_browser_checks(base_url: str, devtools_port: int, profile: str) ->
                 break
             except Exception:
                 if chrome.poll() is not None:
-                    raise AssertionError("Headless Chrome exited before CDP was ready")
+                    raise AssertionError("Headless Chrome exited before CDP was ready") from None
                 await asyncio.sleep(0.1)
         else:
             raise AssertionError("Timed out waiting for Chrome DevTools Protocol")
@@ -421,7 +421,7 @@ def main() -> None:
                 break
             except Exception:
                 if not server_thread.is_alive():
-                    raise AssertionError("In-process app server exited before startup")
+                    raise AssertionError("In-process app server exited before startup") from None
                 time.sleep(0.1)
         else:
             raise AssertionError("Timed out waiting for the in-process app server")

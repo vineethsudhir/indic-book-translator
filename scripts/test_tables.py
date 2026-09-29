@@ -128,7 +128,7 @@ def main() -> None:
         # --- round-trip: fake Kannada lands back in the same units ---------
         fake = [f"ಕನ್ನಡ ಪಠ್ಯ {i}" for i in range(len(paragraphs))]
         translations = {
-            CHAPTER_ID: {p.index: text for p, text in zip(paragraphs, fake)}
+            CHAPTER_ID: {p.index: text for p, text in zip(paragraphs, fake, strict=True)}
         }
         out = tmpdir / "fixture.kn.epub"
         write_translated_epub(src, translations, out)

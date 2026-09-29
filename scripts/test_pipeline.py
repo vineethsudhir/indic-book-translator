@@ -30,7 +30,7 @@ from kannada_epub.consistency_editor import ConsistencyEditor
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
-from kannada_epub.qa import FLAGGED_FOR_REVIEW, PASS, RETRY
+from kannada_epub.qa import FLAGGED_FOR_REVIEW, PASS
 from kannada_epub.translation.base import TranslationProvider
 
 ROOT = Path(__file__).resolve().parent.parent

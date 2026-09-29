@@ -18,12 +18,12 @@ def _numbered(paragraphs: list[str]) -> str:
 def _parse_output(raw: str, expected_count: int) -> list[str]:
     try:
         parsed = json.loads(raw.strip())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as err:
         m = _JSON_ARRAY_RE.search(raw)
         if not m:
             raise RuntimeError(
                 f"Back-translation did not return JSON. Raw output started with: {raw[:200]!r}"
-            )
+            ) from err
         parsed = json.loads(m.group(0))
     if not isinstance(parsed, list) or len(parsed) != expected_count:
         got = len(parsed) if isinstance(parsed, list) else type(parsed).__name__

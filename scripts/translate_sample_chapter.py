@@ -43,7 +43,7 @@ if __name__ == "__main__":
 
     with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
         f.write(f"{chapter.title}\n{'=' * len(chapter.title)}\n\n")
-        for i, (en, kn) in enumerate(zip(english_texts, kannada_texts), 1):
+        for i, (en, kn) in enumerate(zip(english_texts, kannada_texts, strict=True), 1):
             f.write(f"[{i}] EN: {en}\n")
             f.write(f"[{i}] KN: {kn}\n\n")
 

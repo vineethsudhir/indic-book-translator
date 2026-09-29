@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     translations = engine.translate(SAMPLE_SENTENCES, src_lang="eng_Latn", tgt_lang="kan_Knda")
 
-    for src, tgt in zip(SAMPLE_SENTENCES, translations):
+    for src, tgt in zip(SAMPLE_SENTENCES, translations, strict=True):
         print(f"EN: {src}")
         print(f"KN: {tgt}")
         print()

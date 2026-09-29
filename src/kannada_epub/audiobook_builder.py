@@ -27,7 +27,7 @@ def build_audiobook(
     total = sum(len(b.edited_kannada) for b in batches)
     done = 0
     for batch in batches:
-        for text, emotion in zip(batch.edited_kannada, batch.edited_emotions):
+        for text, emotion in zip(batch.edited_kannada, batch.edited_emotions, strict=True):
             done += 1
             progress(f"  narrating [{done}/{total}] ({emotion}) {text[:40]}...")
             if on_narrating is not None:

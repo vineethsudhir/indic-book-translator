@@ -76,7 +76,7 @@ def main() -> None:
         write_epub=not args.no_epub,
         build_audiobook=args.audiobook,
     )
-    result = run_book(cfg, resolve_path=_resolve, options=options, components=components)
+    run_book(cfg, resolve_path=_resolve, options=options, components=components)
 
 
 if __name__ == "__main__":

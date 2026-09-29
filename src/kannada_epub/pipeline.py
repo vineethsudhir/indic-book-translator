@@ -243,7 +243,7 @@ def run_book(
     cfg: BookConfig,
     *,
     resolve_path: Callable[[str], Path],
-    options: RunOptions = RunOptions(),
+    options: RunOptions = RunOptions(),  # noqa: B008 — frozen value object, a safe shared default
     components: PipelineComponents | None = None,
     progress: Callable[[str], None] = print,
     cancel: threading.Event | None = None,

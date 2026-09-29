@@ -1,4 +1,4 @@
-"""App settings and secrets -- pure Python, no Gradio.
+"""App settings and secrets -- pure Python, no UI framework.
 
 Everything the UI needs to persist lives here: the :class:`AppSettings`
 pydantic model (cloud-first defaults), load/save to ``settings.yaml``, the

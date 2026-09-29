@@ -12,6 +12,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGET_DIR = ROOT / "models" / "indic-parler-tts"
 
 if __name__ == "__main__":
+    import argparse
+
+    # Parse before downloading so `--help` prints usage instead of fetching ~3.5 GB.
+    argparse.ArgumentParser(description=__doc__).parse_args()
+
     path = snapshot_download(
         repo_id="ai4bharat/indic-parler-tts",
         local_dir=TARGET_DIR,

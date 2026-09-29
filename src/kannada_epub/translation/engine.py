@@ -197,7 +197,7 @@ class IndicTrans2Engine(TranslationProvider):
         detokenized_chunks = [p.replace(" ", "").replace("▁", " ").strip() for p in translated_pieces]
 
         merged = [""] * len(sentences)
-        for owner, text in zip(chunk_owner, detokenized_chunks):
+        for owner, text in zip(chunk_owner, detokenized_chunks, strict=True):
             merged[owner] = f"{merged[owner]} {text}".strip() if merged[owner] else text
 
         return self._processor.postprocess_batch(merged, lang=tgt_lang)
@@ -238,7 +238,7 @@ class IndicTrans2Engine(TranslationProvider):
         translated = self.translate(all_sentences, src_lang, tgt_lang)
 
         merged = [""] * len(paragraphs)
-        for idx, text in zip(owner, translated):
+        for idx, text in zip(owner, translated, strict=True):
             merged[idx] = f"{merged[idx]} {text}".strip() if merged[idx] else text
 
         for idx, numeral in heading_numerals.items():

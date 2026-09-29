@@ -17,7 +17,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = 0.0
     norm_a = 0.0
     norm_b = 0.0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=True):  # lengths validated equal above
         dot += x * y
         norm_a += x * x
         norm_b += y * y

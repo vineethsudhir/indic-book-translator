@@ -60,6 +60,7 @@ def main() -> int:
 
     try:
         import yaml  # noqa: F401
+
         from kannada_epub.config import load_book_config, load_provider_config
     except ImportError as e:
         fail(f"dependencies not installed ({e})", "Run: pip install -e .")

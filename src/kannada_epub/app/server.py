@@ -259,7 +259,7 @@ def create_app(
         return {"key_status": secret_status()}
 
     @app.post("/api/books", dependencies=[Depends(require_token)])
-    async def upload_book(file: UploadFile = File(...)):
+    async def upload_book(file: UploadFile = File(...)):  # noqa: B008 — FastAPI's required-file marker
         filename = Path((file.filename or "").replace("\\", "/")).name
         if not filename.lower().endswith(".epub"):
             raise HTTPException(400, "Choose an EPUB file (.epub).")
@@ -429,7 +429,7 @@ def create_app(
             english = batch.get("source_english", [])
             kannada = batch.get("edited_kannada", [])
             emotions = batch.get("edited_emotions", [])
-            for offset, (en, kn) in enumerate(zip(english, kannada)):
+            for offset, (en, kn) in enumerate(zip(english, kannada, strict=True)):
                 qa = qa_results[position] if position < len(qa_results) else {}
                 paragraphs.append({
                     "index": qa.get("paragraph_index", batch.get("paragraph_start", 0) + offset),

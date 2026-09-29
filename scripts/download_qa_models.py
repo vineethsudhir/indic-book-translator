@@ -25,6 +25,13 @@ INDIC_EN_DIR = ROOT / "models" / "indic-en-200m-ct2"
 MINILM_REPO = "sentence-transformers/all-MiniLM-L6-v2"
 
 if __name__ == "__main__":
+    import argparse
+
+    # Parse before downloading so `--help` prints usage instead of fetching ~1 GB.
+    argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    ).parse_args()
+
     indic_path = snapshot_download(
         repo_id=INDIC_EN_REPO,
         local_dir=INDIC_EN_DIR,
