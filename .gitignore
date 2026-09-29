@@ -12,6 +12,7 @@ models/
 !.gitkeep
 
 # Run outputs & generated artifacts
+data/*
 data/book_output/
 data/*.wav
 data/*.pdf
