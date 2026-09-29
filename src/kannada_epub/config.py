@@ -39,6 +39,19 @@ class TTSModelConfig(BaseModel):
     sampling_rate: int = 22050
 
 
+class QAConfig(BaseModel):
+    enabled: bool = False
+    back_translation: Literal["indictrans2_local", "llm"] = "llm"
+    indic_en_model_dir: str = "models/indic-en-200m-ct2/indic-en-200m-ct2/ctranslate2_model"
+    llm_provider_config: Optional[str] = None  # path to a ProviderConfig YAML; None = reuse BookConfig.provider_config
+    embedding: Literal["local_minilm", "openai_compatible"] = "local_minilm"
+    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_base_url: Optional[str] = None
+    embedding_api_key_env: Optional[str] = None
+    pass_threshold: float = 0.85
+    flag_threshold: float = 0.70
+
+
 class BookConfig(BaseModel):
     epub_path: str
     output_dir: str
@@ -53,6 +66,7 @@ class BookConfig(BaseModel):
     max_paragraphs_per_chapter: int | None = None
     translation: TranslationModelConfig = TranslationModelConfig()
     tts: TTSModelConfig = TTSModelConfig()
+    qa: QAConfig = QAConfig()
 
 
 def load_provider_config(path: str | Path) -> ProviderConfig:
