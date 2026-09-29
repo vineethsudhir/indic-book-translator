@@ -63,6 +63,17 @@ body, p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th {
   font-family: "Noto Sans Kannada", sans-serif;
   line-height: 1.5em;
 }
+
+table {
+  table-layout: auto;
+}
+
+td, th {
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.5em;
+  vertical-align: top;
+}
 """
 
 

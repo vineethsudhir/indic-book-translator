@@ -8,13 +8,46 @@ from ebooklib import epub
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
-BLOCK_TAGS = ["p", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"]
+BLOCK_TAGS = [
+    "p",
+    "li",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "td",
+    "th",
+    "caption",
+]
+
+# Table cells flow through the pipeline as ordinary paragraphs but are tagged
+# with this kind so downstream consumers can tell them apart.
+TABLE_CELL_TAGS = ("td", "th")
+
+
+def _paragraph_kind(tag) -> str:
+    """Classify a kept block as a table cell or ordinary text.
+
+    A cell is either the ``td``/``th`` itself, or a block (e.g. the ``<p>`` in
+    ``<td><p>x</p></td>``) whose nearest block-level ancestor is one. A
+    ``caption`` stays ``"text"``.
+    """
+    if tag.name in TABLE_CELL_TAGS:
+        return "table_cell"
+    parent = tag.find_parent(BLOCK_TAGS)
+    if parent is not None and parent.name in TABLE_CELL_TAGS:
+        return "table_cell"
+    return "text"
 
 
 @dataclass
 class Paragraph:
     index: int
     text: str
+    kind: str = "text"
 
 
 @dataclass
@@ -35,13 +68,15 @@ def load_epub_chapters(
 ) -> list[Chapter]:
     """Extract reading-order chapters as plain paragraph text.
 
-    Deliberately minimal: no DOM/attribute preservation and no table
-    extraction — just enough structure (chapter -> ordered paragraphs) to
-    translate and review. Reassembly back into an .epub now lives in
+    Deliberately minimal: no DOM/attribute preservation — just enough
+    structure (chapter -> ordered paragraphs) to translate and review.
+    Reassembly back into an .epub now lives in
     `kannada_epub.epub_writer`, which re-reads the source with this same
     parse (and same block enumeration) so a `Paragraph.index` maps back to
-    its element. Full AST-preserving extraction (FR-1.3) and table handling
-    (FR-3.2) remain separate, heavier pieces of work for later.
+    its element. Table cells (``td``/``th``) are included as translatable
+    units and tagged ``Paragraph.kind == "table_cell"``; ``caption`` is
+    treated as ordinary text. Full AST-preserving extraction (FR-1.3)
+    remains a separate, heavier piece of work for later.
 
     A block tag that itself contains a block tag (e.g.
     ``<blockquote><p>…</p></blockquote>``) is skipped, so its text is not
@@ -83,7 +118,7 @@ def load_epub_chapters(
                 continue
             text = " ".join(tag.get_text().split())
             if len(text) >= min_paragraph_chars:
-                paragraphs.append(Paragraph(i, text))
+                paragraphs.append(Paragraph(i, text, _paragraph_kind(tag)))
 
         if paragraphs:
             chapters.append(Chapter(id=item.get_id(), title=title, paragraphs=paragraphs))
