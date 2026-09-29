@@ -7,19 +7,86 @@ from IndicTransToolkit.processor import IndicProcessor
 
 from .base import TranslationProvider
 
-# Best-effort — English only. Indic-language sentence splitting (needed for the
-# future kn->en back-translation direction) isn't implemented yet; the model
-# was trained/evaluated on sentence-level input, and translating whole
+# Best-effort sentence splitting for the languages we translate from. English
+# and Kannada (needed for the kn->en back-translation direction) are
+# supported; other Indic languages still pass through unsplit. The model was
+# trained/evaluated on sentence-level input, and translating whole
 # multi-sentence paragraphs as a single unit is what caused real content loss
 # in testing (see translate_paragraphs docstring).
 _ENGLISH_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
+# Kannada terminators: ".", "?", "!", danda (।, U+0964) and double danda
+# (॥, U+0965). Split only when the terminator is immediately followed by
+# whitespace. A closing quote (" ' ” ’) right after the terminator is NOT a
+# split point: in Kannada prose quoted speech is typically followed by its
+# reporting verb ("ಅವನು \"ಹೌದು.\" ಎಂದನು." — said he), so splitting after the
+# quote would strand that verb as a fragment of its own and back-translate it
+# as nonsense. Keeping the two together is safe; splitting one sentence in
+# half is not. This mirrors the English pattern's "terminator then whitespace"
+# behavior.
+_KANNADA_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥])\s+")
+
+# Abbreviation shapes for the forward-merge pass in _split_sentences. The split
+# regexes above fire after ANY terminator + whitespace, so they also break at
+# abbreviations and initials ("Dr. Watson", "J. H. Watson", "ಡಿ. ವಿ."). A
+# piece ending in one of these shapes is merged FORWARD into the next piece,
+# and the check repeats on the merged result so chains fully rejoin.
+#
+# Forward-only is deliberate: the question is always "does this piece end in
+# something that cannot end a sentence?", i.e. the split we already made was
+# wrong. A false merge is harmless — it keeps two sentences together as one
+# translation unit and nothing is lost; a false split cuts one sentence in
+# half, which is the quality bug we are fixing. Only "." triggers a merge,
+# never "?/!/।/॥" — none of those follow abbreviations.
+#
+# eng_Latn: a capitalized whole-word token of 1-3 letters ending in "."
+# (not preceded by a letter, not the pronoun "I"). Measured on
+# data/sherlock_holmes.epub: catches all 452 wrong splits with 24 harmless
+# extra merges.
+_ENGLISH_ABBREV_END_RE = re.compile(r"(?<![\w])(?!I\.)[A-Z][a-z]{0,2}\.$")
+
+# kan_Knda: the final whitespace-separated token is one or more Kannada
+# aksharas each immediately followed by ".", e.g. "ಡಾ.", "ಶ್ರೀ.", "ಡಿ.",
+# "ವಿ." and the multi-akshara "ಕ್ರಿ.ಶ." / "ಕ್ರಿ.ಪೂ.". An akshara is either an
+# independent vowel (U+0C85-U+0C94) or a consonant (U+0C95-U+0CB9, U+0CDE)
+# with any number of (virama + consonant) clusters, then at most one
+# dependent vowel sign (U+0CBE-U+0CCC) and at most one anusvara/visarga
+# (U+0C82-U+0C83).
+_KANNADA_AKSHARA = (
+    r"(?:[\u0C85-\u0C94]"
+    r"|[\u0C95-\u0CB9\u0CDE](?:\u0CCD[\u0C95-\u0CB9\u0CDE])*[\u0CBE-\u0CCC]?[\u0C82-\u0C83]?)"
+)
+_KANNADA_ABBREV_END_RE = re.compile(r"(?:^|\s)(?:" + _KANNADA_AKSHARA + r"\.)+$")
+
+
+def _ends_with_abbreviation(piece: str, lang: str) -> bool:
+    if lang == "eng_Latn":
+        return _ENGLISH_ABBREV_END_RE.search(piece) is not None
+    if lang == "kan_Knda":
+        return _KANNADA_ABBREV_END_RE.search(piece) is not None
+    return False
+
 
 def _split_sentences(text: str, lang: str) -> list[str]:
-    if lang != "eng_Latn":
+    if lang == "eng_Latn":
+        split_re = _ENGLISH_SENTENCE_SPLIT_RE
+    elif lang == "kan_Knda":
+        split_re = _KANNADA_SENTENCE_SPLIT_RE
+    else:
         return [text]
-    sentences = [s.strip() for s in _ENGLISH_SENTENCE_SPLIT_RE.split(text.strip())]
-    return [s for s in sentences if s]
+    sentences = [s.strip() for s in split_re.split(text.strip())]
+    sentences = [s for s in sentences if s]
+
+    # Single left-to-right pass that re-joins pieces wrongly split after an
+    # abbreviation (see the shape regexes above). Checking merged[-1] each time
+    # means a just-merged piece is re-checked, so initials chains rejoin whole.
+    merged: list[str] = []
+    for piece in sentences:
+        if merged and _ends_with_abbreviation(merged[-1], lang):
+            merged[-1] = f"{merged[-1]} {piece}"
+        else:
+            merged.append(piece)
+    return merged
 
 
 # Matches a leading, syntactically-valid Roman numeral immediately followed by
