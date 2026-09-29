@@ -35,6 +35,16 @@ def build_qa(
         raise ValueError(f"Unknown back_translation engine: {cfg.back_translation!r}")
 
     if cfg.embedding == "local_minilm":
+        # Local models are Hugging Face repo ids ("org/name") or folders; a bare
+        # name like "text-embedding-3-small" is an API model left over from
+        # switching backends, and would fail with an opaque HF download error.
+        if "/" not in cfg.embedding_model and not resolve_path(cfg.embedding_model).exists():
+            raise ValueError(
+                f"Embedding model {cfg.embedding_model!r} is an API model name, but the "
+                "embedding backend is local_minilm. In Settings, set Embedding model to "
+                "'sentence-transformers/all-MiniLM-L6-v2' (or switch the backend to "
+                "openai_compatible)."
+            )
         embedder: Embedder = LocalMiniLMEmbedder(cfg.embedding_model)
     elif cfg.embedding == "openai_compatible":
         if not cfg.embedding_base_url:

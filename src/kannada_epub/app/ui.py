@@ -306,6 +306,19 @@ def _blank(value) -> str:
     return str(value)
 
 
+_LOCAL_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+_API_EMBEDDING_MODEL = "text-embedding-3-small"
+
+
+def _embedding_model_for_backend(backend: str, current: str) -> str:
+    if backend == "local_minilm":
+        return _LOCAL_EMBEDDING_MODEL
+    # Keep a custom API model (e.g. nomic-embed-text) unless it's the local default.
+    if not current.strip() or current.strip() == _LOCAL_EMBEDDING_MODEL:
+        return _API_EMBEDDING_MODEL
+    return current
+
+
 def load_settings_form():
     s = load_settings()
     return (
@@ -576,6 +589,14 @@ def build_app() -> gr.Blocks:
                         label="Embedding key env var",
                         value=_blank(settings.qa.embedding_api_key_env),
                     )
+                # The model box is shared by both backends, so switching the
+                # backend must also switch the model: a local backend asked to
+                # load an API model name fails with a confusing HF download error.
+                qa_embed.change(
+                    _embedding_model_for_backend,
+                    inputs=[qa_embed, qa_embed_model],
+                    outputs=qa_embed_model,
+                )
                 with gr.Row():
                     qa_pass = gr.Number(
                         label="Pass threshold", value=settings.qa.pass_threshold
