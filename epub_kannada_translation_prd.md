@@ -1,12 +1,13 @@
 # Product Requirements Document (PRD)
 ## Local English-to-Kannada EPUB Translation Pipeline, QA Engine & Audiobook Narrator
 
-**Document Version:** 2.0.0
+**Document Version:** 2.2
 **Supersedes:** 1.0.0
 **Target Architecture:** Local-first Execution (Offline / Edge Hardware, with optional cloud LLM for editing pass)
 **Primary Focus:** Automated EPUB Translation, Term Preservation, Table Layout Integrity, Automated Semantic QA, Cross-Chapter Consistency Editing, Emotion-Tagged TTS Audiobook Generation & Human Proofing Workflow
 
 > v2.0 change log: preserves all v1.0 requirements (FR-1..FR-5) with implementation-status annotations, and adds the scope actually built since v1.0 — persistent glossary / Translation Memory (FR-6), LLM consistency editor with provider abstraction (FR-7), per-paragraph emotion tagging (FR-8), Indic Parler-TTS audiobook synthesis (FR-9), and EN/KN proofing artifacts (FR-10). Translation-hardening lessons (sentence-splitting, token-chunking, Roman-numeral bypass, sentinel masking) are now normative.
+> v2.2 change log: updates the implementation status of table translation, QA, and EPUB writing/packaging; full inline-markup preservation, spaCy NER, and in-app EPUBCheck integration remain deferred.
 
 ---
 
@@ -16,8 +17,8 @@ The objective of this project is to build a fully local, automated software pipe
 
 To address common failure modes in machine translation—such as context loss, missing technical terms, corrupted HTML/table formatting, and unvetted translation errors—the system incorporates:
 1. **Selective Term Preserving Masking:** Preventing unnecessary translation of code, brand names, proper nouns, and technical jargon (v1 HTML-span proposal superseded by sentinel-token masking — see FR-2.4).
-2. **Smart Table AST Extraction:** Isolating, translating, and re-assembling complex HTML tables without compromising grid layout or cell alignment (still deferred — see FR-3.2 status).
-3. **Automated QA & Redundancy Loop:** Executing back-translation (Kannada → English) combined with vector embedding semantic similarity scoring to flag low-confidence passages automatically (still deferred — see FR-4 status).
+2. **Smart Table Translation:** Translating table-cell text individually while retaining the source table structure, cell alignment, and attributes (FR-3.2).
+3. **Automated QA & Redundancy Loop:** Optionally back-translating Kannada and scoring semantic similarity to flag likely low-confidence passages, with one retry for the middle score band (FR-4).
 4. **Persistent Glossary / Translation Memory (NEW):** SQLite-backed per-book term store with heuristic candidate mining, CSV human-review loop, and forced substitution (FR-6).
 5. **LLM Consistency Editing (NEW):** Chapter-scoped editing pass that enforces the approved glossary, fixes pronoun/referent drift using rolling intra-chapter context, and normalizes register — with strict paragraph-count preservation (FR-7).
 6. **Emotion-Tagged Narration (NEW):** Same editing call classifies each paragraph into a fixed TTS emotion set, driving downstream expressive synthesis with no second classification pass (FR-8).
@@ -35,10 +36,11 @@ The pipeline operates as a multi-stage sequential processing engine with recursi
        │
        ▼
 [1. Unpacker & Document Parser] ──► Extracts HTML/XHTML, CSS, Images, Manifests
-       │                             (CURRENT: spine-order chapter -> paragraphs only)
+       │                             (CURRENT: spine-order paragraphs + table cells)
        ▼
-[2. AST Tree Builder & Reader] ──► Maps Text Nodes, Tables, & Metadata
-       │                             (DEFERRED: full DOM/attribute preservation)
+[2. Paragraph & Table-Cell Extractor] ──► Reads spine-order blocks and table cells
+       │                                  (CURRENT: stable paragraph indices; full
+       │                                   inline-markup preservation DEFERRED)
        ▼
 [3. Selective Masking Engine] ──► Flags DNT (Do-Not-Translate) Terms & NER Tags
        │                             (CURRENT: sentinel tokens ⟦DNTn⟧ + glossary masking)
@@ -52,14 +54,14 @@ The pipeline operates as a multi-stage sequential processing engine with recursi
 [6. LLM Consistency Edit] ───────► Glossary + pronoun/register fix + emotion tag per para (NEW, FR-7/FR-8)
        │                             Context = rolling tail of SAME chapter only; resets at chapter boundary
        ▼
-[7. QA & Back-Translation Loop] ──► Translates back to EN, Computes Vector Similarity (DEFERRED, FR-4)
+[7. QA & Back-Translation Loop] ──► Optional back-translation + similarity scoring (CURRENT, FR-4)
        │                             ├──► Passes: Proceed to Reassembly
-       │                             └──► Fails: Retry with Fallback Parameters / Log Flag
+       │                             └──► Middle score: retry once; low score: flag for review
        ▼
-[8. Layout & Font Re-injector] ──► Embeds Kannada Web Fonts (Noto Sans) & CSS Adjustments (DEFERRED, FR-5)
+[8. Layout & Font Re-injector] ──► Embeds Kannada Fonts (Noto Sans) & CSS adjustments (CURRENT, FR-5)
        │
        ▼
-[9. EPUB Packager & Validator] ──► Generates Compliant Output .epub File (DEFERRED, FR-5)
+[9. EPUB Packager & Validator] ──► Repackages output EPUB and updates OPF (CURRENT; in-app EPUBCheck DEFERRED, FR-5)
        │
        ▼
 [10. TTS Audiobook Builder] ─────► Emotion-tagged narration -> single WAV audiobook (NEW, FR-9)
@@ -81,7 +83,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
   * Raster images (PNG, JPEG, WebP) and SVG graphics.
   * Embedded fonts, audio clips, and metadata files (`content.opf`, `toc.ncx`, `nav.xhtml`).
 * **FR-1.3 DOM & AST Extraction:** Parse XHTML body text into an Abstract Syntax Tree (AST) preserving parent-child tag hierarchies, inline attributes, and unique element IDs.
-* **Implementation status (v2.0): PARTIAL.** `src/kannada_epub/epub_io.py::load_epub_chapters` implements spine-order (spec-correct reading order) extraction to `Chapter(id, title, paragraphs[])` over block tags `p/li/blockquote/h1-h6` with whitespace normalization. No DOM/attribute preservation, no table extraction, no reassembly. Full AST preservation, asset passthrough, and repackaging remain deferred to FR-5 work.
+* **Implementation status (v2.2): PARTIAL.** `src/kannada_epub/epub_io.py::load_epub_chapters` extracts spine-order block text, including `td`/`th` cells, into paragraphs with stable indices. `src/kannada_epub/epub_writer.py::write_translated_epub` reparses the source documents and replaces translated block contents by those indices; document attributes and IDs are retained, as are untouched archive entries. Inline markup inside translated paragraphs is not fully preserved (ID-bearing descendants are retained empty), so full AST/inline-markup preservation remains deferred. EPUB reassembly, asset preservation, and font/CSS injection are implemented under FR-5.
 
 ### FR-2: Selective Masking & Term Preservation (Do-Not-Translate)
 * **FR-2.1 Named Entity & Context Protection:** Identify tokens that must remain in original English script or explicit transliterated forms:
@@ -111,10 +113,10 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 * **Structure Preservation:** Extract `<table>` structures independently. Isolate cell text while preserving `rowspan`, `colspan`, `class`, `style`, and `align` attributes.
 * **Cell-by-Cell Translation:** Process text within `<th>` and `<td>` elements individually or in structured arrays to prevent model structural confusion.
 * **Layout Adjustment:** Automatically adjust cell line heights and font sizes to accommodate Kannada script expansion.
-* **Implementation status (v2.0): DEFERRED.** No table code exists; `epub_io` extracts only block-tag text. Design from v1.0 (cell-map JSON → translate → re-inject) still holds when scheduled.
+* **Implementation status (v2.2): IMPLEMENTED.** `epub_io.py` includes `td` and `th` as translatable block units and identifies nested blocks in cells as table-cell text. The normal translation pipeline processes these units individually; `epub_writer.py` writes the Kannada text back into the corresponding source elements, retaining table structure and cell attributes. `KANNADA_CSS` adds table layout, wrapping, and line-height rules. Dynamic per-table font sizing is not implemented.
 
 ### FR-4: Automated Quality Assurance & Redundancy Loop
-* (Unchanged from v1.0 — retained as requirement, still deferred.)
+* Optional QA is implemented in `src/kannada_epub/qa/` and orchestrated by `pipeline.py`.
 
 #### FR-4.1 Back-Translation Execution
 * Translate the output Kannada text back to English ($T_{back}$) using an independent local translation path or model prompt configuration.
@@ -141,7 +143,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
   "status": "FLAGGED_FOR_REVIEW"
 }
 ```
-* **Implementation status (v2.0): DEFERRED.** No back-translation or embedding code exists. Current quality gates are: sentence/chunk loss prevention (FR-3.1), glossary enforcement (FR-6), LLM consistency edit with paragraph-count refusal (FR-7), and human proofing (FR-10).
+* **Implementation status (v2.2): IMPLEMENTED WITH LIMITS.** `qa/backtranslate.py` provides LLM and local IndicTrans2 back-translation; `qa/embed.py` provides hosted-compatible and local MiniLM embeddings; `qa/report.py` checks input/output counts, calculates cosine similarity, classifies each paragraph, and writes `qa_report.json`. The default pass and retry thresholds are 0.85 and 0.70. `pipeline.py` retries each middle-band paragraph once with the configured translation provider and keeps the retry only if its score improves; it does not yet vary translation parameters as FR-4.3 proposed. Lower scores are flagged in the report and EPUB. QA is optional, and its scores flag likely issues rather than guarantee translation accuracy.
 
 ### FR-5: EPUB Generation & Rendering Enhancements
 * **FR-5.1 Font Injection:** Embed standard open-source Kannada typefaces (e.g., *Noto Sans Kannada*, *Tiro Kannada*) directly into the output `.epub` font directory.
@@ -149,7 +151,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
   * Increase default `line-height` to `1.45em` - `1.6em` to prevent vertical overlap of Kannada diacritics (*kagunita*).
   * Configure `font-family` fallbacks across global stylesheets.
 * **FR-5.3 Manifest Verification:** Generate updated `content.opf` manifests and ensure compliance using `epubcheck`.
-* **Implementation status (v2.0): DEFERRED.** No packaging code exists. Requirement retained unchanged.
+* **Implementation status (v2.2): IMPLEMENTED WITH LIMITS.** `src/kannada_epub/epub_writer.py::write_translated_epub` edits and repackages the source ZIP directly, writes `mimetype` first and uncompressed, preserves untouched entries byte-for-byte, updates translated XHTML and the OPF manifest/language, and adds Noto Sans Kannada regular/bold fonts, `OFL.txt`, and `kannada.css`. The injected CSS sets Kannada font fallbacks, `line-height: 1.5em`, table wrapping, and a review highlight. The writer uses a temporary file and rename. EPUBCheck is not integrated into the app; run it separately to validate an output.
 
 ### FR-6: Persistent Glossary / Translation Memory (NEW — implemented)
 * **FR-6.1 Store:** `src/kannada_epub/glossary/store.py::GlossaryStore` — one SQLite file per book/series (`data/project.glossary.db`). Schema `glossary_terms(source_term, source_term_key UNIQUE, target_term, term_type, status pending|approved|rejected, frequency, first_seen_chapter, notes, timestamps)`. `add_candidates` inserts pending / bumps frequency on repeats; `upsert_review` applies human decisions; `get_approved_dict()` returns `{en: kn}` lock map; `get_relevant_glossary(text)` scopes the map to terms occurring in the current batch (keeps editor prompts small).
@@ -199,7 +201,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 * **Local Translation Models:** `IndicTrans2` (AI4Bharat) via `ctranslate2` (+ `sentencepiece`, `IndicTransToolkit`, `huggingface_hub`, `torch`, `transformers`) — see `pyproject.toml`
 * **Named Entity Recognition / Masking:** heuristic regex/frequency (`glossary/extraction.py`) now; `spaCy` (`en_core_web_sm`) + custom regex remains the future option per FR-2
 * **Consistency Editing LLM:** Ollama (`gemma4:26b` default) / any OpenAI-compatible API / Anthropic native — via `providers/` abstraction; `pyyaml`, `pydantic`, `httpx`, `openai`, `anthropic` clients
-* **Embedding Model (QA Loop, deferred):** `sentence-transformers` (`all-MiniLM-L6-v2`)
+* **Embedding Model (QA Loop):** local MiniLM via `transformers`/`torch`, or an OpenAI-compatible embeddings endpoint.
 * **TTS / Audio:** `ai4bharat/indic-parler-tts` via `parler_tts`, `soundfile`, `numpy`, `torch`
 * **Font Packages:** Google Noto Fonts (*Noto Sans Kannada*)
 * **Glossary Store:** stdlib `sqlite3` (no ORM)
@@ -210,10 +212,10 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 
 | Risk Factor | Impact | Mitigation Strategy |
 |---|---|---|
-| **Table Grid Distortion** | High | Extract table content into strict JSON schemas prior to translation. Re-assemble cell-by-cell matching exact AST node structure. (Still deferred — FR-3.2.) |
-| **Diacritics Overlap (Rendering)** | Medium | Automatically inject global CSS line-height patches (`line-height: 1.55 !important`) into all XHTML documents. (Still deferred — FR-5.2.) |
-| **Model Translation Hallucinations** | High | Enforce strict sentence-length ratio checks and semantic similarity verification via the QA back-translation loop. (Deferred — current mitigations: sentence-level input, chunking, glossary lock, consistency edit, human proof.) |
-| **Missing Fonts on Target E-Readers** | Medium | Hard-embed font files (`.ttf` / `.woff2`) inside the `.epub` container and declare explicit `@font-face` rules. (Still deferred — FR-5.1.) |
+| **Table Grid Distortion** | High | Translate table-cell units in place while preserving the source table structure and attributes (FR-3.2); test varied EPUB tables. |
+| **Diacritics Overlap (Rendering)** | Medium | Inject Kannada CSS with `line-height: 1.5em` into translated documents (FR-5.2); verify across reading apps. |
+| **Model Translation Hallucinations** | High | QA back-translation similarity scoring flags likely issues and retries middle-band paragraphs (FR-4); human review is still needed for quality assurance. |
+| **Missing Fonts on Target E-Readers** | Medium | Embed Noto Sans Kannada regular/bold font files and declare `@font-face` rules in the output EPUB (FR-5.1). |
 | **Silent content truncation (NMT)** | High | Sentence-split + token-chunk + merge (FR-3.1). Verified fix for lost trailing sentences. |
 | **Silent content truncation (TTS)** | High | ≤200-char sentence-group chunks per generate() call (FR-9.2). Verified ~30s ceiling. |
 | **Wrong-context pronoun fixes** | Medium | Rolling context scoped to same chapter only; reset at chapter boundary (FR-7.4). Correct for story collections; revisit for continuous novels. |
@@ -227,14 +229,14 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 
 ## 7. Operational Roadmap
 
-1. **Phase 1: Parsing & Masking Engine (Weeks 1–2)** — *Partially done.* EPUB unzipper + minimal chapter/paragraph parser + sentinel/DNT masking + heuristic glossary mining done. Still to do: full DOM/AST preservation (FR-1.3), spaCy NER upgrade.
-2. **Phase 2: Translation & Table Engine Integration (Weeks 3–4)** — *Translation done, tables deferred.* CTranslate2 IndicTrans2 with sentence/chunk hardening + Roman-numeral handling done. Still to do: cell-by-cell table pipeline (FR-3.2).
-3. **Phase 3: QA & Back-Translation Loop (Weeks 5–6)** — *Deferred, interim mitigations in place.* Still to do: `kn→en` back-translation path (needs Indic sentence splitter), embedding similarity + `qa_report.json` (FR-4).
-4. **Phase 4: CSS/Font Injection & EPUB Packaging (Weeks 7–8)** — *Deferred.* Still to do: font embedding, line-height auto-tuning, `content.opf` + `epubcheck` (FR-5).
+1. **Phase 1: Parsing & Masking Engine (Weeks 1–2)** — *Core implementation done.* Spine-order paragraphs and table cells, stable paragraph indices, sentinel masking, and heuristic glossary mining are implemented. Full inline-markup preservation (FR-1.3) and spaCy NER remain deferred.
+2. **Phase 2: Translation & Table Engine Integration (Weeks 3–4)** — *Implemented.* IndicTrans2 and cloud translation providers, sentence/chunk hardening, Roman-numeral handling, and cell-by-cell table translation (FR-3.1/FR-3.2) are implemented.
+3. **Phase 3: QA & Back-Translation Loop (Weeks 5–6)** — *Implemented.* Optional back-translation, embedding similarity, middle-band retry, low-score flagging, and `qa_report.json` are implemented (FR-4).
+4. **Phase 4: CSS/Font Injection & EPUB Packaging (Weeks 7–8)** — *Implemented.* Noto Sans Kannada embedding, Kannada CSS, OPF updates, and direct ZIP repackaging are implemented (FR-5). EPUBCheck is a separate validation step and is not integrated into the app.
 5. **Phase 5: Glossary TM + Consistency Editing (NEW — implemented).** SQLite store, CSV review loop, forced substitution, provider-abstracted LLM edit with paragraph-integrity guarantees, chapter-scoped rolling context (FR-6/FR-7).
 6. **Phase 6: Emotion Tagging + TTS Audiobook (NEW — implemented).** Fixed emotion set, chunked Parler-TTS synthesis, peak normalization, single-WAV assembly (FR-8/FR-9).
 7. **Phase 7: Proofing & Regression Harness (NEW — implemented).** EN/KN sample export, proof HTML/PDF, `test_*.py` scripts (FR-10).
-8. **Next:** FR-4 QA loop → FR-3.2 tables → FR-5 packaging, in that order (packaging last so it wraps verified content).
+8. **Next:** Human quality audit of generated translations; broader EPUB/table and reader-app validation; full inline-markup preservation; and optional integration of EPUBCheck. spaCy NER remains a future glossary improvement.
 
 ---
 
