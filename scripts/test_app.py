@@ -116,6 +116,7 @@ def test_settings() -> None:
     assert defaults.exclude_ids == ["coverpage-wrapper"]
     assert defaults.strip_gutenberg is False
     assert defaults.epubcheck is True
+    assert defaults.chapter_context == "auto"
 
     changed = defaults.model_copy(update={"batch_size": 7, "tone_register": "formal Kannada"})
     save_settings(changed)
@@ -136,13 +137,18 @@ def test_settings() -> None:
     assert custom.exclude_ids == ["custom-section"]
 
     changed = changed.model_copy(
-        update={"exclude_ids": ["custom-section"], "strip_gutenberg": True,
-                "epubcheck": False}
+        update={
+            "exclude_ids": ["custom-section"],
+            "strip_gutenberg": True,
+            "epubcheck": False,
+            "chapter_context": "carry",
+        }
     )
     save_settings(changed)
     reloaded = load_settings()
     assert reloaded.strip_gutenberg is True
     assert reloaded.epubcheck is False
+    assert reloaded.chapter_context == "carry"
 
     cfg, out_dir = book_config_for(EPUB, reloaded)
     assert isinstance(cfg, BookConfig)
@@ -155,6 +161,7 @@ def test_settings() -> None:
     assert cfg.exclude_ids == ["custom-section"]
     assert cfg.strip_gutenberg is True
     assert cfg.epubcheck is False
+    assert cfg.chapter_context == "carry"
 
     provider_cfg = load_provider_config(cfg.provider_config)
     assert provider_cfg.provider == reloaded.editor.provider

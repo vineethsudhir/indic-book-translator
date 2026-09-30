@@ -1,6 +1,7 @@
 import logging
+import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 
@@ -11,6 +12,24 @@ from .providers.base import OutputTruncatedError
 from .translation import TranslationProvider
 
 _log = logging.getLogger(__name__)
+
+# ``Chapter.title`` values that identify front matter rather than a story or
+# chapter. Such chapters are ignored when deciding the continuity mode.
+_FRONT_MATTER_RE = re.compile(
+    r"^(?:the\s+)?(?:preface|introduction|table\s+of\s+contents|contents|"
+    r"dedication|front\s+matter)\b",
+    re.IGNORECASE,
+)
+# "Chapter 5", "CHAPTER XLII THE DRAWERS OF WATER", "Ch. 7 …" — a chapter
+# marker followed by a number or roman numeral. Text may follow on the same
+# line ("… THE DRAWERS OF WATER"), which named-story titles ("I. A SCANDAL IN
+# BOHEMIA") do not have: there the roman numeral is separated by a period and
+# is not the word "chapter".
+_NUMBERED_CHAPTER_RE = re.compile(
+    r"^ch(?:apter|\.)\s*(?:\d+|[ivxlcdm]+)\b", re.IGNORECASE
+)
+# A bare heading that is only a number or roman numeral, e.g. "IV" or "3.".
+_BARE_NUMBER_RE = re.compile(r"^(?:\d+|[ivxlcdm]+)\.?$", re.IGNORECASE)
 
 # Errors after which re-running the editor on a smaller slice can succeed:
 # the model ran out of output tokens, the HTTP call timed out, or the reply
@@ -32,24 +51,82 @@ class TranslatedBatch:
     prior_context_used: str
 
 
+def chapter_context_tail(chapter: Chapter, context_tail_paragraphs: int) -> str:
+    """The English tail of ``chapter`` used as the next chapter's context.
+
+    Mirrors the rolling context within a chapter (the last
+    ``context_tail_paragraphs`` English source paragraphs, joined by spaces),
+    but taken from the whole chapter so a resumed run computes the same value
+    as an uninterrupted one.
+    """
+    if context_tail_paragraphs <= 0:
+        return ""
+    return " ".join(p.text for p in chapter.paragraphs[-context_tail_paragraphs:])
+
+
+def _looks_like_chapter_heading(text: str) -> bool:
+    """True for "Chapter N"/"Ch. N"/"IV"-shaped headings, not story titles."""
+    text = text.strip()
+    if not text:
+        return False
+    return bool(_NUMBERED_CHAPTER_RE.match(text) or _BARE_NUMBER_RE.match(text))
+
+
+def detect_chapter_context(chapters: list[Chapter]) -> Literal["carry", "reset"]:
+    """Guess whether ``chapters`` are parts of one story or separate stories.
+
+    A continuous novel carries context across chapter boundaries; a
+    short-story collection resets it at each one. The guess looks at the
+    chapter headings, so it stays cheap and explainable:
+
+    - Front matter (a title starting with "preface", "introduction", "table of
+      contents", "contents", "dedication" or "front matter") is ignored.
+    - A chapter counts as numbered when its title looks like "Chapter 5",
+      "Ch. 7", "CHAPTER XLII …", or is only a number/roman numeral ("IV").
+      A descriptive title whose document has no heading of its own (the loader
+      falls back to the TOC label, e.g. "The Drawers of Water") may instead
+      start with its own leading heading paragraph, so that paragraph is
+      checked too. An untitled chapter has neither, so it never counts.
+    - With fewer than 3 remaining chapters there isn't enough signal: reset.
+    - Otherwise the book carries when at least 60% of the remaining chapters
+      are numbered, and resets when most are named stories (e.g. "I. A SCANDAL
+      IN BOHEMIA").
+    """
+    remaining = 0
+    numbered = 0
+    for chapter in chapters:
+        title = (chapter.title or "").strip()
+        if title and _FRONT_MATTER_RE.match(title):
+            continue
+        remaining += 1
+        if _looks_like_chapter_heading(title):
+            numbered += 1
+        elif title and chapter.paragraphs and _looks_like_chapter_heading(
+            chapter.paragraphs[0].text
+        ):
+            numbered += 1
+    if remaining < 3:
+        return "reset"
+    return "carry" if numbered / remaining >= 0.6 else "reset"
+
+
 class BookTranslator:
     """Orchestrates EPUB -> IndicTrans2 -> consistency-edit across a whole book.
 
-    Continuity boundary = EPUB chapter (spine item). Within a chapter, batches
-    of `batch_size` paragraphs are translated together, and a rolling context
-    (the tail of the previous batch's English source) carries forward to the
-    next batch of the SAME chapter. That rolling context resets to empty at
-    every chapter boundary.
+    Within a chapter, batches of `batch_size` paragraphs are translated
+    together, and a rolling context (the tail of the previous batch's English
+    source) carries forward to the next batch of the SAME chapter.
 
-    This is the right call for a short-story collection, where each EPUB
-    chapter is an independent story: carrying context across chapters would
-    leak one story's plot into an unrelated one and could cause the
-    consistency editor to "fix" a pronoun or reference using context that
-    doesn't actually apply — a wrong-context bug, not just a missing-context
-    one. A single continuous novel split into chapters would want the
-    opposite (context carried across chapters); that's a different book
-    shape and not what this class assumes — chapter boundaries here are
-    treated as story boundaries because that's what they are in this book.
+    The boundary *between* chapters is decided by the caller, not by this
+    class. ``translate_chapters`` accepts an ``incoming_context`` that the
+    first batch of the first chapter in the call sees; every later chapter in
+    the same call resets to empty. Passing one chapter at a time (as the
+    pipeline does) lets the caller choose per book whether context carries
+    across chapter boundaries — carrying it for a continuous novel, and
+    resetting it for a short-story collection, where crossing a story boundary
+    would leak one plot's pronouns into an unrelated one and cause the
+    consistency editor to "fix" a reference using context that doesn't apply.
+    See ``detect_chapter_context`` for the automatic choice.
 
     The consistency editor also assigns each paragraph an emotion tag (see
     consistency_editor.EMOTIONS) for downstream TTS narration — one model
@@ -139,10 +216,24 @@ class BookTranslator:
             )
             return left + right
 
-    def translate_chapters(self, chapters: list[Chapter]) -> list[TranslatedBatch]:
+    def translate_chapters(
+        self, chapters: list[Chapter], *, incoming_context: str = ""
+    ) -> list[TranslatedBatch]:
+        """Translate ``chapters`` in order, returning one batch per span.
+
+        ``incoming_context`` is the English tail of whatever came before the
+        first chapter (the pipeline's carried context); it seeds the rolling
+        context of the first batch only. Every later chapter in this call
+        resets to empty, preserving the collection behaviour for callers that
+        pass several chapters at once. Callers that want cross-chapter
+        continuity should pass one chapter per call and thread the context
+        themselves (see ``chapter_context_tail``).
+        """
         results: list[TranslatedBatch] = []
-        for chapter in chapters:
-            rolling_context = ""  # reset at every chapter (= story) boundary
+        for index, chapter in enumerate(chapters):
+            # A later chapter is a fresh boundary; the first chapter may
+            # continue context supplied by the caller.
+            rolling_context = incoming_context if index == 0 else ""
             paragraphs = chapter.paragraphs
             for start in range(0, len(paragraphs), self._batch_size):
                 batch = paragraphs[start : start + self._batch_size]

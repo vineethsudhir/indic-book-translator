@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Callable
 
 from .audiobook_builder import build_audiobook
-from .book_translator import BookTranslator, TranslatedBatch
+from .book_translator import (
+    BookTranslator,
+    TranslatedBatch,
+    chapter_context_tail,
+    detect_chapter_context,
+)
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
 from .cover import CoverText
@@ -506,6 +511,18 @@ def run_book(
     chapters = load_epub_chapters(epub_path, exclude_ids=cfg.exclude_ids)
     source_problems = _check_source(epub_path, progress)
     edition = _check_edition(epub_path, chapters, progress)
+
+    # Decide once per book, from the chapters as loaded (before this run's
+    # limit/preview trimming): are they parts of one story or separate ones?
+    chapter_context = cfg.chapter_context
+    if chapter_context == "auto":
+        chapter_context = detect_chapter_context(chapters)
+        progress(
+            "Chapter context: carry (detected continuous novel)"
+            if chapter_context == "carry"
+            else "Chapter context: reset (detected separate stories)"
+        )
+
     if limit_chapters:
         wanted = set(limit_chapters)
         chapters = [c for c in chapters if c.id in wanted]
@@ -536,6 +553,7 @@ def run_book(
         glossary_store=components.glossary_store,
         consistency_editor=components.editor,
         batch_size=batch_size,
+        context_tail_paragraphs=cfg.context_tail_paragraphs,
         register=cfg.tone_register,
     )
 
@@ -543,6 +561,7 @@ def run_book(
         "epub": str(epub_path),
         "preview": is_preview,
         "exclude_ids": list(cfg.exclude_ids),
+        "chapter_context": chapter_context,
         "paragraphs_translated": 0,
         "paragraphs_total": 0,
         "chapters": [],
@@ -555,6 +574,10 @@ def run_book(
     all_batches: list[TranslatedBatch] = []
     all_results: list[QAResult] = []
     cancelled = False
+    # English tail of the previous chapter, threaded into the editor when the
+    # book is continuous. It advances for resumed chapters too, so a resume
+    # computes the same context as an uninterrupted run.
+    carried = ""
 
     for chapter_index, chapter in enumerate(chapters, start=1):
         if cancel is not None and cancel.is_set():
@@ -562,6 +585,7 @@ def run_book(
             progress(f"[{chapter.id}] cancelled before processing")
             break
 
+        incoming_context = carried if chapter_context == "carry" else ""
         batches = _matching_checkpoints(checkpoints_dir, chapter)
         resumed = batches is not None
         emit({
@@ -576,9 +600,14 @@ def run_book(
             manifest["skipped"].append(chapter.id)
         else:
             progress(f"[{chapter.id}] translating {len(chapter.paragraphs)} paragraphs...")
-            batches = translator.translate_chapters([chapter])
+            batches = translator.translate_chapters(
+                [chapter], incoming_context=incoming_context
+            )
             for batch in batches:
                 _write_checkpoint(checkpoints_dir, batch)
+
+        if chapter_context == "carry":
+            carried = chapter_context_tail(chapter, cfg.context_tail_paragraphs)
 
         if components.qa is not None:
             emit({"type": "stage", "stage": "qa"})

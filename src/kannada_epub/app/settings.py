@@ -13,6 +13,7 @@ import importlib.util
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
@@ -95,6 +96,9 @@ class AppSettings(BaseModel):
     strip_gutenberg: bool = False
     # Validate the translated EPUB with EPUBCheck when it's installed.
     epubcheck: bool = True
+    # "auto" detects continuous novels from the chapter titles; "carry"/"reset"
+    # force how the consistency editor sees the previous chapter's context.
+    chapter_context: Literal["auto", "carry", "reset"] = "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +238,7 @@ def book_config_for(epub_path: str | Path, settings: AppSettings) -> tuple[BookC
         exclude_ids=list(settings.exclude_ids),
         strip_gutenberg=settings.strip_gutenberg,
         epubcheck=settings.epubcheck,
+        chapter_context=settings.chapter_context,
         translation=settings.translation,
         tts=settings.tts,
         qa=settings.qa,

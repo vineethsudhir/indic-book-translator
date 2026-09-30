@@ -1553,8 +1553,9 @@
         `${escapeHtml(epubcheck.how_to || "")}</p>`;
     return `<section class="card settings-card">
       <h2>Advanced</h2>
-      <p class="section-intro">Fine-tune paragraph grouping, skipped sections,
-        and optional cleanup for Project Gutenberg books.</p>
+      <p class="section-intro">Fine-tune how chapters are treated, paragraph
+        grouping, skipped sections, and optional cleanup for Project Gutenberg
+        books.</p>
       <label class="toggle-row">
         <input class="switch" type="checkbox" id="strip-gutenberg"
           ${settings.strip_gutenberg ? "checked" : ""}>
@@ -1573,6 +1574,17 @@
         </span>
       </label>
       ${epubcheckStatus}
+      <div class="field">
+        <span class="field-label">Chapters are…</span>
+        ${radioChoices("chapter-context", [
+          ["auto", "Detect automatically",
+            "Guess from the chapter titles whether they belong together."],
+          ["carry", "Parts of one story (carry context between chapters)",
+            "Keep track of names and pronouns across chapter boundaries."],
+          ["reset", "Separate stories (start each chapter fresh)",
+            "Treat every chapter as an independent story."],
+        ], settings.chapter_context, {})}
+      </div>
       <div class="advanced-grid">
         ${textField("batch-size", "Batch size", settings.batch_size, "number")}
         ${textField("register", "Writing style", settings.tone_register)}
@@ -1805,6 +1817,7 @@
       exclude_ids: fieldValue("exclude").split(",").map(value => value.trim()).filter(Boolean),
       strip_gutenberg: document.getElementById("strip-gutenberg").checked,
       epubcheck: document.getElementById("epubcheck-enabled").checked,
+      chapter_context: currentChoice("chapter-context", old.chapter_context || "auto"),
     };
 
     if (embeddingChoice === "ollama") {

@@ -68,6 +68,10 @@ class BookConfig(BaseModel):
     exclude_ids: list[str] = ["coverpage-wrapper"]
     strip_gutenberg: bool = False
     epubcheck: bool = False
+    # Whether the consistency editor may see the previous chapter's English
+    # tail as context. "auto" detects continuous novels from the chapter
+    # titles; "carry"/"reset" force the choice. See detect_chapter_context.
+    chapter_context: Literal["auto", "carry", "reset"] = "auto"
     limit_chapters: list[str] | None = None
     max_paragraphs_per_chapter: int | None = None
     translation: TranslationModelConfig = TranslationModelConfig()

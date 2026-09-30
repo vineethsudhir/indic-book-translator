@@ -30,14 +30,23 @@ from bs4 import BeautifulSoup
 from epub_fixture import build_epub
 
 from kannada_epub import pipeline as pipeline_module
-from kannada_epub.book_translator import BookTranslator
+from kannada_epub.book_translator import (
+    BookTranslator,
+    chapter_context_tail,
+    detect_chapter_context,
+)
 from kannada_epub.config import BookConfig
 from kannada_epub.consistency_editor import (
     ConsistencyEditor,
     EditorOutputError,
     _parse_numbered_output,
 )
-from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
+from kannada_epub.epub_io import (
+    BLOCK_TAGS,
+    Chapter,
+    Paragraph,
+    load_epub_chapters,
+)
 from kannada_epub.epub_writer import find_gutenberg_cover
 from kannada_epub.epubcheck_runner import EpubcheckResult
 from kannada_epub.glossary import GlossaryStore
@@ -177,6 +186,17 @@ class ExplodingTranslationEngine(TranslationProvider):
         self, paragraphs: list[str], src_lang: str, tgt_lang: str
     ) -> list[str]:
         raise AssertionError("translation ran despite resumable checkpoints")
+
+
+class BlockChapterOneEngine(FakeTranslationEngine):
+    """Fails only for chapter 1, so a later chapter still translates on resume."""
+
+    def translate_paragraphs(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        if paragraphs and paragraphs[0] == "CHAPTER I":
+            raise AssertionError("chapter 1 was retranslated despite checkpoints")
+        return super().translate_paragraphs(paragraphs, src_lang, tgt_lang)
 
 
 class FakeBackTranslator:
@@ -326,6 +346,34 @@ def _load_chapter(chapter_id: str, n: int):
     chapter = next(c for c in load_epub_chapters(EPUB) if c.id == chapter_id)
     chapter.paragraphs = chapter.paragraphs[:n]
     return chapter
+
+
+def _chapter(chapter_id: str, title: str | None, paragraphs: tuple[str, ...] = ()) -> Chapter:
+    return Chapter(
+        id=chapter_id,
+        title=title,
+        paragraphs=[Paragraph(i, text) for i, text in enumerate(paragraphs)],
+    )
+
+
+def _multi_chapter_epub(path: Path, titles: list[str], *, paragraphs: int = 5) -> None:
+    """A small EPUB with one heading + `paragraphs` body paragraphs per chapter."""
+    documents = []
+    for index, title in enumerate(titles, start=1):
+        body = "".join(
+            f"<p>Chapter {index} body paragraph {n}.</p>" for n in range(1, paragraphs + 1)
+        )
+        documents.append({
+            "id": f"ch{index}",
+            "href": f"ch{index}.xhtml",
+            "content": (
+                '<?xml version="1.0" encoding="utf-8"?>'
+                '<html xmlns="http://www.w3.org/1999/xhtml">'
+                f"<head><title>{title}</title></head>"
+                f"<body><h1>{title}</h1>{body}</body></html>"
+            ),
+        })
+    build_epub(path, documents)
 
 
 def _expected_edited(source_texts: list[str]) -> list[str]:
@@ -767,6 +815,167 @@ def _check_editor_parser() -> None:
             raise AssertionError(f"expected a mismatch for {bad!r}")
 
 
+def _check_context_detection() -> None:
+    """detect_chapter_context: numbered chapters carry, named stories reset."""
+    # Numbered chapters of one novel -> carry.
+    assert detect_chapter_context([
+        _chapter("c1", "CHAPTER I"),
+        _chapter("c2", "Chapter 2"),
+        _chapter("c3", "CHAPTER III THE DRAWERS OF WATER"),
+        _chapter("c4", "IV"),
+    ]) == "carry"
+
+    # Named stories (a collection) -> reset.
+    assert detect_chapter_context([
+        _chapter("c1", "I. A SCANDAL IN BOHEMIA"),
+        _chapter("c2", "The Red-Headed League"),
+        _chapter("c3", "A Case of Identity"),
+    ]) == "reset"
+
+    # Front matter is ignored before the count: Preface + 3 numbered -> carry.
+    assert detect_chapter_context([
+        _chapter("c0", "Preface"),
+        _chapter("c1", "Chapter 1"),
+        _chapter("c2", "Chapter 2"),
+        _chapter("c3", "Chapter 3"),
+    ]) == "carry"
+
+    # Too little signal: fewer than 3 remaining chapters -> reset.
+    assert detect_chapter_context([
+        _chapter("c1", "Chapter 1"),
+        _chapter("c2", "Chapter 2"),
+    ]) == "reset"
+
+    # Untitled chapters give no signal -> reset.
+    assert detect_chapter_context([
+        _chapter("c1", None),
+        _chapter("c2", None),
+        _chapter("c3", None),
+    ]) == "reset"
+
+    # A descriptive TOC label whose document starts with its own chapter
+    # heading (as rajmohan.epub loads) still counts as numbered.
+    assert detect_chapter_context([
+        _chapter("c1", "The Drawers of Water", ("RAJMOHAN'S WIFE",)),
+        _chapter("c2", "The Two Cousins", ("CHAPTER II THE TWO COUSINS",)),
+        _chapter("c3", "The Truant's Return Home", ("CHAPTER III THE TRUANT'S RETURN HOME",)),
+    ]) == "carry"
+
+    # The tail helper honours the configured paragraph count (and 0 is empty).
+    chapter = _chapter("c1", "Chapter 1", ("one", "two", "three", "four"))
+    assert chapter_context_tail(chapter, 2) == "three four"
+    assert chapter_context_tail(chapter, 0) == ""
+
+    # Real books (git-ignored ones skipped when absent).
+    assert detect_chapter_context(load_epub_chapters(EPUB)) == "reset"
+    rajmohan = ROOT / ".omc" / "showcase" / "books" / "rajmohan.epub"
+    if rajmohan.exists():
+        assert detect_chapter_context(load_epub_chapters(rajmohan)) == "carry"
+
+
+def _run_context_book(
+    epub: Path,
+    output_dir: Path,
+    *,
+    chapter_context: str,
+    translation_engine=None,
+    limit_chapters: list[str] | None = None,
+) -> list[str]:
+    components = PipelineComponents(
+        translation_engine=translation_engine or FakeTranslationEngine(),
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(output_dir / "glossary.db"),
+    )
+    cfg = BookConfig(
+        epub_path=str(epub),
+        output_dir=str(output_dir),
+        glossary_db=str(output_dir / "glossary.db"),
+        chapter_context=chapter_context,
+        context_tail_paragraphs=3,
+        batch_size=10,
+    )
+    lines: list[str] = []
+    run_book(
+        cfg,
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=limit_chapters),
+        components=components,
+        progress=lines.append,
+    )
+    return lines
+
+
+def _checkpoint_prior_context(output_dir: Path, chapter_id: str) -> str:
+    data = json.loads(
+        (output_dir / "checkpoints" / f"{chapter_id}_0000.json").read_text(encoding="utf-8")
+    )
+    return data["prior_context_used"]
+
+
+def _check_chapter_context_pipeline(tmp: Path) -> None:
+    """Cross-chapter context: carry, reset, configured tail, resume, manifest."""
+    epub = tmp / "continuous.epub"
+    _multi_chapter_epub(epub, ["CHAPTER I", "CHAPTER II", "CHAPTER III"])
+    source = {c.id: c for c in load_epub_chapters(epub)}
+
+    # --- carry: chapter 2's first batch sees chapter 1's English tail ------
+    carry_dir = tmp / "carry"
+    _run_context_book(epub, carry_dir, chapter_context="carry")
+    manifest = json.loads((carry_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["chapter_context"] == "carry", manifest["chapter_context"]
+    expected1 = chapter_context_tail(source["ch1"], 3)
+    assert expected1  # non-empty: 3 body paragraphs
+    assert _checkpoint_prior_context(carry_dir, "ch1") == ""
+    assert _checkpoint_prior_context(carry_dir, "ch2") == expected1, (
+        _checkpoint_prior_context(carry_dir, "ch2")
+    )
+    assert _checkpoint_prior_context(carry_dir, "ch3") == chapter_context_tail(
+        source["ch2"], 3
+    )
+
+    # --- reset: chapter 2's first batch gets no context -------------------
+    reset_dir = tmp / "reset"
+    _run_context_book(epub, reset_dir, chapter_context="reset")
+    manifest = json.loads((reset_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["chapter_context"] == "reset", manifest["chapter_context"]
+    assert _checkpoint_prior_context(reset_dir, "ch2") == ""
+
+    # --- auto detects a continuous novel and says so ----------------------
+    auto_dir = tmp / "auto"
+    lines = _run_context_book(epub, auto_dir, chapter_context="auto")
+    assert "Chapter context: carry (detected continuous novel)" in lines, lines
+    manifest = json.loads((auto_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["chapter_context"] == "carry", manifest["chapter_context"]
+
+    # --- auto detects a story collection and resets -----------------------
+    stories = tmp / "stories.epub"
+    _multi_chapter_epub(
+        stories,
+        ["I. A SCANDAL IN BOHEMIA", "II. THE RED-HEADED LEAGUE", "III. A CASE OF IDENTITY"],
+    )
+    stories_dir = tmp / "stories_out"
+    story_lines = _run_context_book(stories, stories_dir, chapter_context="auto")
+    assert "Chapter context: reset (detected separate stories)" in story_lines, story_lines
+    manifest = json.loads((stories_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["chapter_context"] == "reset", manifest["chapter_context"]
+    assert _checkpoint_prior_context(stories_dir, "ch2") == ""
+
+    # --- resume in carry mode: chapter 1 from checkpoints, ch2 still gets its tail
+    resume_dir = tmp / "carry_resume"
+    _run_context_book(epub, resume_dir, chapter_context="carry", limit_chapters=["ch1"])
+    _run_context_book(
+        epub,
+        resume_dir,
+        chapter_context="carry",
+        translation_engine=BlockChapterOneEngine(),
+    )
+    manifest = json.loads((resume_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert "ch1" in manifest["skipped"], manifest["skipped"]
+    assert _checkpoint_prior_context(resume_dir, "ch2") == chapter_context_tail(
+        source["ch1"], 3
+    )
+
+
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}
     source_item4 = source[CHAPTER_ID]
@@ -928,9 +1137,12 @@ def main() -> None:
         _check_cover(tmp)
         # --- optional EPUBCheck wiring --------------------------------------
         _check_epubcheck(tmp)
+        # --- cross-chapter context: carry/reset, tail size, resume, manifest -
+        _check_chapter_context_pipeline(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
+    _check_context_detection()
     _check_editor_parser()
 
     # --- cloud-only import check (no local ML libs) ------------------------
