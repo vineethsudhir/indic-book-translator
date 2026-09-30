@@ -49,6 +49,27 @@ def needs_translation(text: str) -> bool:
     return bool(stripped) and _NOTHING_TO_TRANSLATE_RE.fullmatch(stripped) is None
 
 
+def restore_untranslatable(batch: "TranslatedBatch") -> int:
+    """Put number-only source paragraphs back verbatim in a saved batch.
+
+    Checkpoints written before these paragraphs bypassed translation can hold
+    invented text for them ("7." -> "happened on the 7th"). Positions don't
+    change, only the text at them, so alignment is untouched. Returns how
+    many paragraphs were restored.
+    """
+    restored = 0
+    for i, source in enumerate(batch.source_english):
+        if needs_translation(source) or batch.edited_kannada[i] == source:
+            continue
+        batch.edited_kannada[i] = source
+        if i < len(batch.draft_kannada):
+            batch.draft_kannada[i] = source
+        if i < len(batch.edited_emotions):
+            batch.edited_emotions[i] = "Narration"
+        restored += 1
+    return restored
+
+
 # Errors after which re-running the editor on a smaller slice can succeed:
 # the model ran out of output tokens, the HTTP call timed out, or the reply
 # came back unusable (empty / wrong paragraph count). Unrelated RuntimeErrors

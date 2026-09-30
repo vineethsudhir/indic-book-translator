@@ -1032,6 +1032,23 @@ def _check_number_only_paragraphs(tmp: Path) -> None:
     [batch] = translator.translate_chapters([only_numbers])
     assert engine.inputs == [] and batch.edited_kannada == ["3.", "IV"]
 
+    # Older checkpoints with invented text for "7." are repaired on resume.
+    from kannada_epub.book_translator import restore_untranslatable
+    from kannada_epub.pipeline import _matching_checkpoints, _write_checkpoint
+
+    [good] = translator.translate_chapters([chapter])
+    good.edited_kannada[4] = "7ರಂದು ನಡೆಯಿತು."
+    good.draft_kannada[4] = "7ರಂದು ನಡೆಯಿತು."
+    good.edited_emotions[4] = "Happy"
+    checkpoints = tmp / "old-checkpoints"
+    checkpoints.mkdir()
+    _write_checkpoint(checkpoints, good)
+    [resumed] = _matching_checkpoints(checkpoints, chapter)
+    assert resumed.edited_kannada[4] == "7." and resumed.draft_kannada[4] == "7."
+    assert resumed.edited_emotions[4] == "Narration"
+    assert resumed.edited_kannada[1] == "ಕನ್ನಡ The first", resumed.edited_kannada
+    assert restore_untranslatable(resumed) == 0
+
 
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}

@@ -30,6 +30,7 @@ from .book_translator import (
     TranslatedBatch,
     chapter_context_tail,
     detect_chapter_context,
+    restore_untranslatable,
 )
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
@@ -134,6 +135,9 @@ def _matching_checkpoints(
     Because the chain is read from the checkpoints themselves, a resume works
     regardless of the `batch_size` the checkpoints were saved with — retrying
     a chapter with a smaller batch size still reuses finished work.
+
+    Number-only paragraphs in loaded batches are restored to their source
+    text (see ``restore_untranslatable``), which repairs older checkpoints.
     """
     n = len(chapter.paragraphs)
     batches: list[TranslatedBatch] = []
@@ -155,6 +159,7 @@ def _matching_checkpoints(
             or len(batch.edited_kannada) != batch.paragraph_end - pos
         ):
             return None
+        restore_untranslatable(batch)
         batches.append(batch)
         pos = batch.paragraph_end
     return batches or None
