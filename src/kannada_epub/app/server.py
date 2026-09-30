@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from ..edition_check import edition_notes, edition_payload
 from ..epub_check import check_source_epub
 from ..epub_io import load_epub_chapters, read_epub_metadata
 from ..pipeline import PipelineComponents, RunOptions, output_file_names
@@ -322,6 +323,10 @@ def create_app(
         except Exception:  # noqa: BLE001 — a check failure must not fail the upload
             problem_messages = None
             problem_count = 0
+        try:
+            edition = edition_payload(edition_notes(dest, chapters))
+        except Exception:  # noqa: BLE001 — a check failure must not fail the upload
+            edition = None
         response = {
             "book_id": dest.stem,
             "filename": dest.name,
@@ -335,6 +340,8 @@ def create_app(
         }
         if problem_messages is not None:
             response["source_problems"] = problem_messages
+        if edition is not None:
+            response["edition"] = edition
         return response
 
     @app.post("/api/run", dependencies=[Depends(require_token)])

@@ -27,6 +27,7 @@ from .audiobook_builder import build_audiobook
 from .book_translator import BookTranslator, TranslatedBatch
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
+from .edition_check import edition_notes, edition_payload
 from .epub_check import check_source_epub
 from .epub_io import Chapter, load_epub_chapters
 from .epub_writer import (
@@ -340,6 +341,39 @@ def _check_source(
     return [{"path": problem.path, "message": problem.message} for problem in problems]
 
 
+def _check_edition(
+    epub_path: Path, chapters: list[Chapter], progress: Callable[[str], None]
+) -> dict | None:
+    """Report front-matter copyright risks; return them for the run manifest.
+
+    Like the source check, this must never stop a run: an unexpected failure
+    is reported and treated as no notes. It is computed on the chapters as
+    loaded, before ``limit_chapters``/``max_paragraphs`` trimming, so the
+    opening matter is always inspected.
+    """
+    try:
+        notes = edition_notes(epub_path, chapters)
+    except Exception as exc:  # noqa: BLE001 — never let the check stop a run
+        progress(f"Edition check skipped: {exc}")
+        return None
+    if notes.needs_review:
+        progress(
+            f"Edition check: this edition may include text first published in "
+            f"{notes.cutoff_year} or later, such as a preface or notes; those "
+            "parts can still be under copyright even if the original book isn't."
+        )
+        details = [
+            (f"{year} in {label}: {snippet}")
+            for label, year, snippet in notes.recent_years
+        ] + [
+            (f"Copyright notice in {label}: {snippet}")
+            for label, snippet in notes.copyright_notices
+        ]
+        for detail in details[:5]:
+            progress(f"  - {detail}")
+    return edition_payload(notes)
+
+
 def run_book(
     cfg: BookConfig,
     *,
@@ -372,6 +406,7 @@ def run_book(
 
     chapters = load_epub_chapters(epub_path, exclude_ids=cfg.exclude_ids)
     source_problems = _check_source(epub_path, progress)
+    edition = _check_edition(epub_path, chapters, progress)
     if limit_chapters:
         wanted = set(limit_chapters)
         chapters = [c for c in chapters if c.id in wanted]
@@ -414,6 +449,8 @@ def run_book(
         "skipped": [],
         "source_problems": source_problems,
     }
+    if edition is not None:
+        manifest["edition"] = edition
     all_batches: list[TranslatedBatch] = []
     all_results: list[QAResult] = []
     cancelled = False

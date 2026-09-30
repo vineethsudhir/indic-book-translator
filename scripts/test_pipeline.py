@@ -621,6 +621,7 @@ def main() -> None:
         assert manifest["paragraphs_translated"] == N_PARAGRAPHS
         assert manifest["paragraphs_total"] == len(source_item4.paragraphs)
         assert manifest["source_problems"] == [], manifest["source_problems"]
+        assert manifest["edition"]["needs_review"] is False, manifest["edition"]
 
         # --- regression: preview with QA, then a full run in the same folder --
         # The preview's checkpoint and QA cache share names with the full run's

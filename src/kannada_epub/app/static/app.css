@@ -288,6 +288,11 @@ h3 {
 .source-warning .details {
   margin-top: 8px;
 }
+.edition-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
 .option-list {
   display: grid;
   gap: 15px;

@@ -311,6 +311,37 @@ def test_api() -> None:
         assert all(chapter["title"] for chapter in uploaded["chapters"])
         assert uploaded["source_problem_count"] == 0, uploaded
         assert uploaded["source_problems"] == [], uploaded
+        assert uploaded["edition"]["needs_review"] is False, uploaded["edition"]
+
+        # A fixture with a 1935 imprint and a preface in the first chapter is
+        # flagged for review, and the evidence travels in the response.
+        imprint_epub = DATA_DIR / "imprint.epub"
+        build_epub(imprint_epub, [
+            {
+                "id": "c0",
+                "href": "c0.xhtml",
+                "content": (
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<html xmlns="http://www.w3.org/1999/xhtml">'
+                    "<head><title>Rajmohan's Wife</title></head>"
+                    "<body><h1>Rajmohan's Wife</h1>"
+                    "<p>R. CHATTERJEE CALCUTTA. 1935</p><p>PREFACE</p></body></html>"
+                ),
+            },
+        ], extra_metadata=["<dc:date>1864</dc:date>"])
+        with imprint_epub.open("rb") as source:
+            imprint_response = client.post(
+                "/api/books",
+                headers=authed,
+                files={"file": (imprint_epub.name, source, "application/epub+zip")},
+            )
+        assert imprint_response.status_code == 200, imprint_response.text
+        imprint = imprint_response.json()
+        assert imprint["edition"]["needs_review"] is True, imprint["edition"]
+        assert imprint["edition"]["front_matter"] == ["Preface"], imprint["edition"]
+        assert any(
+            year["year"] == 1935 for year in imprint["edition"]["recent_years"]
+        ), imprint["edition"]
 
         # A source EPUB that is defective on its own is reported, not rejected.
         defective_epub = DATA_DIR / "defective.epub"

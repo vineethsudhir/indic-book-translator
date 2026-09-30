@@ -131,6 +131,43 @@
     return `Translation: ${translation} · Editing: ${editor}`;
   }
 
+  function editionNotesMarkup(edition) {
+    if (!edition) return "";
+    const parts = [];
+    // Only a bare year is an edition date; e-text tools such as Project
+    // Gutenberg put their release date (1999-03-01) in dc:date.
+    if (/^\d{4}$/.test(edition.date || "")) {
+      parts.push(`Edition date: ${escapeHtml(edition.date)}`);
+    }
+    if (Array.isArray(edition.front_matter) && edition.front_matter.length) {
+      parts.push(`Front matter: ${escapeHtml(edition.front_matter.join(", "))}`);
+    }
+    const quiet = parts.length
+      ? `<p class="edition-note">${parts.join(" · ")}</p>`
+      : "";
+    if (!edition.needs_review) return quiet;
+
+    const findings = [];
+    (edition.recent_years || []).forEach(entry => {
+      findings.push(`<li>${escapeHtml(String(entry.year))} in ` +
+        `“${escapeHtml(entry.chapter)}”: ${escapeHtml(entry.snippet)}</li>`);
+    });
+    (edition.copyright_notices || []).forEach(entry => {
+      findings.push(`<li>Copyright notice in ` +
+        `“${escapeHtml(entry.chapter)}”: ${escapeHtml(entry.snippet)}</li>`);
+    });
+    return `${quiet}<div class="source-warning edition-warning">
+      <p>This edition may include text first published in ` +
+        `${escapeHtml(String(edition.cutoff_year))} or later, such as a preface ` +
+        `or notes. Those parts can still be under copyright even if the ` +
+        `original book isn't. Check them before you share the translation.</p>
+      <details class="details">
+        <summary>Show what was found</summary>
+        <ul>${findings.join("")}</ul>
+      </details>
+    </div>`;
+  }
+
   function bookSelectionMarkup(book) {
     if (book) {
       const paragraphCount = book.chapters.reduce(
@@ -162,7 +199,7 @@
             `${paragraphCount} paragraphs</p>
         </div>
         ${button("Change", "quiet", "id=change-book")}
-      </div>${sourceWarning}`;
+      </div>${sourceWarning}${editionNotesMarkup(book.edition)}`;
     }
 
     return `<div class="dropzone" id="dropzone" tabindex="0">
