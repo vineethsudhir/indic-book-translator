@@ -13,6 +13,10 @@ class ProviderConfig(BaseModel):
     api_key_env: Optional[str] = None
     temperature: float = 0.2
     max_tokens: int = 4096
+    # Ollama-only: HTTP timeout in seconds. None = derive from max_tokens
+    # (max(180, max_tokens / 8)); a fixed 180 s was too short for token-heavy
+    # Kannada replies at the 4096 default.
+    timeout_seconds: Optional[float] = None
     # Ollama-only: reasoning-capable models can burn the whole max_tokens
     # budget on hidden reasoning and return nothing. Off by default for
     # reliability; set true if you want the model to reason through edits

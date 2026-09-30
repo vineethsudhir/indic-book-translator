@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 
 
+class OutputTruncatedError(RuntimeError):
+    """The model stopped because it hit its output-token limit."""
+
+
 class ConsistencyEditorProvider(ABC):
     """A chat-completion backend used for the chapter-level consistency/editing pass.
 

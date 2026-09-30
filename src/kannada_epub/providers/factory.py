@@ -15,6 +15,7 @@ def build_provider(config: ProviderConfig) -> ConsistencyEditorProvider:
             temperature=config.temperature,
             max_tokens=config.max_tokens,
             think=config.think,
+            timeout_seconds=config.timeout_seconds,
         )
 
     if config.provider == "openai_compatible":

@@ -3,6 +3,15 @@ from dataclasses import dataclass
 
 from .providers.base import ConsistencyEditorProvider
 
+
+class EditorOutputError(RuntimeError):
+    """The consistency editor produced output that can't be used as-is.
+
+    Raised for an empty reply or a paragraph-number mismatch. Callers can catch
+    this precisely to re-run the batch in smaller pieces, while unrelated
+    ``RuntimeError``s still propagate unchanged.
+    """
+
 # ai4bharat/indic-parler-tts's officially supported emotion tags (see its
 # model card). Constraining to this exact set means the tag can be dropped
 # straight into a TTS description prompt downstream with no translation step.
@@ -88,7 +97,7 @@ def _parse_numbered_output(raw: str, expected_count: int) -> list[EditedParagrap
     if got_numbers != expected_numbers:
         missing = sorted(expected_numbers - got_numbers)
         unexpected = sorted(got_numbers - expected_numbers)
-        raise RuntimeError(
+        raise EditorOutputError(
             f"Consistency editor output paragraph numbers don't match input — expected "
             f"[P1..P{expected_count}], missing {missing or 'none'}, unexpected {unexpected or 'none'}. "
             f"Raw output started with: {raw[:200]!r}"
@@ -126,7 +135,7 @@ class ConsistencyEditor:
         user_prompt = _build_user_prompt(draft_kannada_text, glossary, prior_chapter_context, register)
         result = self._provider.complete(SYSTEM_PROMPT, user_prompt)
         if not result.strip():
-            raise RuntimeError(
+            raise EditorOutputError(
                 "Consistency editor returned empty output — refusing to overwrite the draft chapter. "
                 "This can happen if a reasoning-capable model exhausts max_tokens before answering; "
                 "if using Ollama, keep 'think: false' or raise max_tokens."

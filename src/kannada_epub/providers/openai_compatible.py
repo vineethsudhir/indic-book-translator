@@ -1,6 +1,6 @@
 from openai import OpenAI
 
-from .base import ConsistencyEditorProvider
+from .base import ConsistencyEditorProvider, OutputTruncatedError
 
 
 class OpenAICompatibleProvider(ConsistencyEditorProvider):
@@ -27,4 +27,9 @@ class OpenAICompatibleProvider(ConsistencyEditorProvider):
             temperature=self._temperature,
             max_tokens=self._max_tokens,
         )
+        if response.choices[0].finish_reason == "length":
+            raise OutputTruncatedError(
+                "The model stopped generating because it hit max_tokens "
+                f"({self._max_tokens}) — the reply is incomplete."
+            )
         return response.choices[0].message.content or ""

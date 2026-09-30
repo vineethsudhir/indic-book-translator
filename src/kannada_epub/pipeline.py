@@ -89,10 +89,6 @@ def _batch_key(chapter_id: str, start: int) -> str:
     return f"{chapter_id}_{start:04d}.json"
 
 
-def _expected_starts(n_paragraphs: int, batch_size: int) -> list[int]:
-    return list(range(0, n_paragraphs, batch_size))
-
-
 def _load_checkpoint(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -102,32 +98,46 @@ def _checkpoint_to_batch(data: dict) -> TranslatedBatch:
 
 
 def _matching_checkpoints(
-    checkpoints_dir: Path, chapter: Chapter, batch_size: int
+    checkpoints_dir: Path, chapter: Chapter
 ) -> list[TranslatedBatch] | None:
     """The chapter's saved batches, only if they cover exactly the paragraphs
     being translated now; otherwise None (re-translate the chapter).
 
-    A checkpoint's file name only encodes its start position, so a batch saved
-    by a preview run (e.g. 2 paragraphs) has the same name as the first batch
-    of a full run. Matching the span and source text keeps a resume from
-    splicing preview output into a full book.
+    The batches are read as a chain of saved checkpoints: start at position 0,
+    load the checkpoint whose name encodes that start, require its span to
+    begin there and its source text to match the chapter's paragraphs, then
+    continue from its end until the whole chapter is covered. A checkpoint's
+    file name only encodes its start position, so a batch saved by a preview
+    run (e.g. 2 paragraphs) has the same name as the first batch of a full
+    run; matching the span and source text keeps a resume from splicing
+    preview output into a full book.
+
+    Because the chain is read from the checkpoints themselves, a resume works
+    regardless of the `batch_size` the checkpoints were saved with — retrying
+    a chapter with a smaller batch size still reuses finished work.
     """
     n = len(chapter.paragraphs)
     batches: list[TranslatedBatch] = []
-    for start in _expected_starts(n, batch_size):
-        path = checkpoints_dir / _batch_key(chapter.id, start)
+    pos = 0
+    while pos < n:
+        path = checkpoints_dir / _batch_key(chapter.id, pos)
         if not path.exists():
             return None
         batch = _checkpoint_to_batch(_load_checkpoint(path))
-        end = min(start + batch_size, n)
-        expected_source = [p.text for p in chapter.paragraphs[start:end]]
         if (
-            (batch.paragraph_start, batch.paragraph_end) != (start, end)
-            or batch.source_english != expected_source
-            or len(batch.edited_kannada) != end - start
+            batch.paragraph_start != pos
+            or batch.paragraph_end <= pos
+            or batch.paragraph_end > n
+        ):
+            return None
+        expected_source = [p.text for p in chapter.paragraphs[pos : batch.paragraph_end]]
+        if (
+            batch.source_english != expected_source
+            or len(batch.edited_kannada) != batch.paragraph_end - pos
         ):
             return None
         batches.append(batch)
+        pos = batch.paragraph_end
     return batches or None
 
 
@@ -380,7 +390,7 @@ def run_book(
             progress(f"[{chapter.id}] cancelled before processing")
             break
 
-        batches = _matching_checkpoints(checkpoints_dir, chapter, batch_size)
+        batches = _matching_checkpoints(checkpoints_dir, chapter)
         resumed = batches is not None
         emit({
             "type": "chapter",

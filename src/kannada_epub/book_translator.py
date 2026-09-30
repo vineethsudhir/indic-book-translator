@@ -1,10 +1,22 @@
+import logging
 from dataclasses import dataclass
 from typing import Optional
 
-from .consistency_editor import ConsistencyEditor
+import httpx
+
+from .consistency_editor import ConsistencyEditor, EditedParagraph, EditorOutputError
 from .epub_io import Chapter
 from .glossary import GlossaryStore
+from .providers.base import OutputTruncatedError
 from .translation import TranslationProvider
+
+_log = logging.getLogger(__name__)
+
+# Errors after which re-running the editor on a smaller slice can succeed:
+# the model ran out of output tokens, the HTTP call timed out, or the reply
+# came back unusable (empty / wrong paragraph count). Unrelated RuntimeErrors
+# are deliberately not caught and propagate unchanged.
+_RETRYABLE_EDITOR_ERRORS = (OutputTruncatedError, httpx.TimeoutException, EditorOutputError)
 
 
 @dataclass
@@ -42,6 +54,11 @@ class BookTranslator:
     The consistency editor also assigns each paragraph an emotion tag (see
     consistency_editor.EMOTIONS) for downstream TTS narration — one model
     call does both jobs, no separate classification pass needed.
+
+    If the editor can't handle a whole batch (truncated output, HTTP timeout,
+    empty/unparseable reply), the batch is edited in halves, recursively down
+    to single paragraphs, without redoing the draft translation. The final
+    result is still one `TranslatedBatch` for the original span.
     """
 
     def __init__(
@@ -60,6 +77,68 @@ class BookTranslator:
         self._context_tail = context_tail_paragraphs
         self._register = register
 
+    def _edit_with_split(
+        self,
+        english_texts: list[str],
+        draft_kn: list[str],
+        glossary: dict[str, str],
+        incoming_context: str,
+        chapter_id: str,
+        span_start: int,
+    ) -> list[EditedParagraph]:
+        """Consistency-edit one slice of a batch, halving it on retryable errors.
+
+        Returns one `EditedParagraph` per input paragraph, concatenated in
+        order across any splits. If a single-paragraph edit still fails with a
+        retryable error, that error propagates: the book fails rather than
+        risking a misalignment.
+        """
+        draft_text = "\n\n".join(draft_kn)
+        try:
+            return self._editor.edit_chapter(
+                draft_kannada_text=draft_text,
+                glossary=glossary,
+                prior_chapter_context=incoming_context,
+                register=self._register,
+            )
+        except _RETRYABLE_EDITOR_ERRORS as exc:
+            if len(english_texts) <= 1:
+                raise
+            mid = len(english_texts) // 2
+            _log.warning(
+                "Consistency editor failed for chapter %r paragraphs [%d:%d] (%s: %s); "
+                "splitting into [%d:%d] and [%d:%d] and retrying.",
+                chapter_id,
+                span_start,
+                span_start + len(english_texts),
+                type(exc).__name__,
+                exc,
+                span_start,
+                span_start + mid,
+                span_start + mid,
+                span_start + len(english_texts),
+            )
+            left = self._edit_with_split(
+                english_texts[:mid],
+                draft_kn[:mid],
+                glossary,
+                incoming_context,
+                chapter_id,
+                span_start,
+            )
+            # The second half continues the first half's English source, the
+            # same rolling-context rule that carries between whole batches.
+            right_context = " ".join(english_texts[:mid][-self._context_tail :])
+            right = self._edit_with_split(
+                english_texts[mid:],
+                draft_kn[mid:],
+                glossary,
+                right_context,
+                chapter_id,
+                span_start + mid,
+            )
+            return left + right
+
     def translate_chapters(self, chapters: list[Chapter]) -> list[TranslatedBatch]:
         results: list[TranslatedBatch] = []
         for chapter in chapters:
@@ -70,14 +149,15 @@ class BookTranslator:
                 english_texts = [p.text for p in batch]
 
                 draft_kn = self._engine.translate_paragraphs(english_texts, "eng_Latn", "kan_Knda")
-                draft_text = "\n\n".join(draft_kn)
 
                 relevant_glossary = self._glossary.get_relevant_glossary(" ".join(english_texts))
-                edited_paragraphs = self._editor.edit_chapter(
-                    draft_kannada_text=draft_text,
+                edited_paragraphs = self._edit_with_split(
+                    english_texts=english_texts,
+                    draft_kn=draft_kn,
                     glossary=relevant_glossary,
-                    prior_chapter_context=rolling_context,
-                    register=self._register,
+                    incoming_context=rolling_context,
+                    chapter_id=chapter.id,
+                    span_start=start,
                 )
 
                 if len(edited_paragraphs) != len(batch):

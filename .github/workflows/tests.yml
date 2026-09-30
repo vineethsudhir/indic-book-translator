@@ -29,6 +29,7 @@ jobs:
           python scripts/test_epub_writer.py
           python scripts/test_tables.py
           python scripts/test_qa.py
+          python scripts/test_providers.py
           python scripts/test_pipeline.py
           python scripts/test_app.py
           python scripts/test_tts_engine.py

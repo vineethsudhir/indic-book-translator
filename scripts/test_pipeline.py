@@ -25,11 +25,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 import lxml.etree as ET
 from bs4 import BeautifulSoup
 
+from kannada_epub.book_translator import BookTranslator
 from kannada_epub.config import BookConfig
 from kannada_epub.consistency_editor import ConsistencyEditor
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
+from kannada_epub.providers.base import OutputTruncatedError
 from kannada_epub.qa import FLAGGED_FOR_REVIEW, PASS
 from kannada_epub.translation.base import TranslationProvider
 
@@ -73,6 +75,78 @@ class FakeEditorProvider:
             number, text = parts[i], parts[i + 1].strip()
             blocks.append(f"[P{number}]\nEMOTION: Narration\n{text}")
         return "\n\n".join(blocks)
+
+
+class _EchoEditorProviderBase:
+    """Parses the numbered draft and re-emits it, appending "[EDITED]" markers.
+
+    Subclasses decide which paragraph counts to fail on, so the test can drive
+    BookTranslator's split-and-retry either through truncation
+    (`OutputTruncatedError`) or through a paragraph-count mismatch.
+    """
+
+    def __init__(self):
+        self.batch_sizes: list[int] = []
+
+    def _blocks(self, user_prompt: str) -> list[tuple[str, str]]:
+        draft = user_prompt.split("DRAFT_CHAPTER:\n", 1)[1]
+        parts = re.split(r"\[P(\d+)\]\n", draft)
+        return [(parts[i], parts[i + 1].strip()) for i in range(1, len(parts), 2)]
+
+    def _emit(self, blocks: list[tuple[str, str]]) -> str:
+        return "\n\n".join(
+            f"[P{number}]\nEMOTION: Narration\n{text} [EDITED]" for number, text in blocks
+        )
+
+
+class TruncatingEditorProvider(_EchoEditorProviderBase):
+    """Raises OutputTruncatedError whenever asked to edit more than `max_ok`."""
+
+    def __init__(self, max_ok: int):
+        super().__init__()
+        self._max_ok = max_ok
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        blocks = self._blocks(user_prompt)
+        self.batch_sizes.append(len(blocks))
+        if len(blocks) > self._max_ok:
+            raise OutputTruncatedError(f"{len(blocks)} paragraphs is more than {self._max_ok}")
+        return self._emit(blocks)
+
+
+class DropLastEditorProvider(_EchoEditorProviderBase):
+    """Drops the final paragraph when asked to edit more than `max_ok`.
+
+    The missing number makes `_parse_numbered_output` raise an EditorOutputError
+    (a RuntimeError), exercising the mismatch path rather than truncation.
+    """
+
+    def __init__(self, max_ok: int):
+        super().__init__()
+        self._max_ok = max_ok
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        blocks = self._blocks(user_prompt)
+        self.batch_sizes.append(len(blocks))
+        if len(blocks) > self._max_ok:
+            blocks = blocks[:-1]
+        return self._emit(blocks)
+
+
+class AlwaysFailEditorProvider:
+    """Fails with a retryable error even for a single paragraph."""
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        raise OutputTruncatedError("every batch is too large")
+
+
+class ExplodingTranslationEngine(TranslationProvider):
+    """Raises if translated, proving a chapter was reused from checkpoints."""
+
+    def translate_paragraphs(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        raise AssertionError("translation ran despite resumable checkpoints")
 
 
 class FakeBackTranslator:
@@ -216,6 +290,137 @@ print("cloud-only-import-ok")
     )
     assert proc.returncode == 0, f"subprocess failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
     assert "cloud-only-import-ok" in proc.stdout
+
+
+def _load_chapter(chapter_id: str, n: int):
+    chapter = next(c for c in load_epub_chapters(EPUB) if c.id == chapter_id)
+    chapter.paragraphs = chapter.paragraphs[:n]
+    return chapter
+
+
+def _expected_edited(source_texts: list[str]) -> list[str]:
+    return [f"ಕನ್ನಡ {text[:10]} [EDITED]" for text in source_texts]
+
+
+def _check_split_and_resume(tmp: Path) -> None:
+    """Editor split-and-retry (truncation + mismatch) and batch-size-free resume."""
+    # --- truncating editor: one 10-paragraph batch splits down and lines up --
+    chapter = _load_chapter(CHAPTER_ID, 10)
+    source_texts = [p.text for p in chapter.paragraphs]
+    engine = FakeTranslationEngine()
+    truncating = TruncatingEditorProvider(max_ok=3)
+    translator = BookTranslator(
+        translation_engine=engine,
+        glossary_store=GlossaryStore(tmp / "split.db"),
+        consistency_editor=ConsistencyEditor(truncating),
+        batch_size=10,
+    )
+    batches = translator.translate_chapters([chapter])
+    assert len(batches) == 1, batches
+    batch = batches[0]
+    assert (batch.paragraph_start, batch.paragraph_end) == (0, 10), batch
+    assert batch.prior_context_used == ""
+    assert batch.source_english == source_texts
+    assert batch.draft_kannada == [f"ಕನ್ನಡ {t[:10]}" for t in source_texts]
+    assert batch.edited_kannada == _expected_edited(source_texts), batch.edited_kannada
+    assert len(batch.edited_emotions) == 10
+    # The editor really did split: it was asked for 10, then 5s, then 2s/3s.
+    assert truncating.batch_sizes[0] == 10
+    assert 5 in truncating.batch_sizes and 2 in truncating.batch_sizes
+    assert engine.calls == 1, engine.calls  # draft translation not redone
+
+    # --- dropping the last paragraph of big batches hits the mismatch path ---
+    chapter2 = _load_chapter(CHAPTER_ID, 10)
+    source_texts2 = [p.text for p in chapter2.paragraphs]
+    engine2 = FakeTranslationEngine()
+    dropping = DropLastEditorProvider(max_ok=2)
+    translator2 = BookTranslator(
+        translation_engine=engine2,
+        glossary_store=GlossaryStore(tmp / "drop.db"),
+        consistency_editor=ConsistencyEditor(dropping),
+        batch_size=10,
+    )
+    batches2 = translator2.translate_chapters([chapter2])
+    assert len(batches2) == 1, batches2
+    assert (batches2[0].paragraph_start, batches2[0].paragraph_end) == (0, 10), batches2[0]
+    assert batches2[0].edited_kannada == _expected_edited(source_texts2), batches2[0].edited_kannada
+    assert engine2.calls == 1, engine2.calls
+
+    # --- draft translation is one call per ORIGINAL batch, not per split ----
+    chapter3 = _load_chapter(CHAPTER_ID, 10)
+    source_texts3 = [p.text for p in chapter3.paragraphs]
+    engine3 = FakeTranslationEngine()
+    translator3 = BookTranslator(
+        translation_engine=engine3,
+        glossary_store=GlossaryStore(tmp / "multi.db"),
+        consistency_editor=ConsistencyEditor(TruncatingEditorProvider(max_ok=3)),
+        batch_size=4,
+    )
+    batches3 = translator3.translate_chapters([chapter3])
+    assert engine3.batch_sizes == [4, 4, 2], engine3.batch_sizes
+    assert engine3.calls == 3, engine3.calls
+    assert [(b.paragraph_start, b.paragraph_end) for b in batches3] == [(0, 4), (4, 8), (8, 10)]
+    flat = [text for b in batches3 for text in b.edited_kannada]
+    assert flat == _expected_edited(source_texts3), flat
+
+    # --- an always-failing editor propagates and leaves no partial state ----
+    fail_dir = tmp / "always_fail"
+    fail_components = PipelineComponents(
+        translation_engine=FakeTranslationEngine(),
+        editor=ConsistencyEditor(AlwaysFailEditorProvider()),
+        glossary_store=GlossaryStore(fail_dir / "glossary.db"),
+    )
+    try:
+        run_book(
+            _make_cfg(fail_dir),
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=[CHAPTER_ID], max_paragraphs=3, batch_size=3),
+            components=fail_components,
+            progress=lambda _msg: None,
+        )
+    except OutputTruncatedError as exc:
+        assert "every batch is too large" in str(exc)
+    else:
+        raise AssertionError("expected OutputTruncatedError to propagate")
+    checkpoints_dir = fail_dir / "checkpoints"
+    assert not list(checkpoints_dir.iterdir()), list(checkpoints_dir.iterdir())
+    assert not (fail_dir / "chapters" / f"{CHAPTER_ID}.json").exists()
+    assert not (fail_dir / "manifest.json").exists()
+
+    # --- resume works across a changed batch_size --------------------------
+    resume_dir = tmp / "batch_size_resume"
+    resume_components = PipelineComponents(
+        translation_engine=FakeTranslationEngine(),
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(resume_dir / "glossary.db"),
+    )
+    first = run_book(
+        _make_cfg(resume_dir),
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=[CHAPTER_ID], max_paragraphs=12, batch_size=4),
+        components=resume_components,
+        progress=lambda _msg: None,
+    )
+    assert first.epub_path is not None and first.epub_path.exists()
+    saved = sorted(p.name for p in (resume_dir / "checkpoints").iterdir())
+    assert saved == ["item4_0000.json", "item4_0004.json", "item4_0008.json"], saved
+
+    exploding = ExplodingTranslationEngine()
+    second_components = PipelineComponents(
+        translation_engine=exploding,
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(resume_dir / "glossary.db"),
+    )
+    second = run_book(
+        _make_cfg(resume_dir),
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=[CHAPTER_ID], max_paragraphs=12, batch_size=3),
+        components=second_components,
+        progress=lambda _msg: None,
+    )
+    assert second.epub_path is not None and second.epub_path.exists()
+    manifest = json.loads((resume_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert CHAPTER_ID in manifest["skipped"], manifest["skipped"]
 
 
 def main() -> None:
@@ -368,6 +573,9 @@ def main() -> None:
         manifest = json.loads((both_dir / "manifest.json").read_text(encoding="utf-8"))
         assert manifest["preview"] is False
         assert manifest["paragraphs_translated"] == manifest["paragraphs_total"]
+
+        # --- editor split-and-retry, and resume across a changed batch_size -
+        _check_split_and_resume(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

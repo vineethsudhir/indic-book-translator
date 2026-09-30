@@ -1,6 +1,6 @@
 from anthropic import Anthropic
 
-from .base import ConsistencyEditorProvider
+from .base import ConsistencyEditorProvider, OutputTruncatedError
 
 
 class AnthropicProvider(ConsistencyEditorProvider):
@@ -20,4 +20,9 @@ class AnthropicProvider(ConsistencyEditorProvider):
             temperature=self._temperature,
             max_tokens=self._max_tokens,
         )
+        if response.stop_reason == "max_tokens":
+            raise OutputTruncatedError(
+                "Anthropic stopped generating because it hit max_tokens "
+                f"({self._max_tokens}) — the reply is incomplete."
+            )
         return "".join(block.text for block in response.content if block.type == "text")

@@ -1,6 +1,8 @@
+from typing import Optional
+
 import httpx
 
-from .base import ConsistencyEditorProvider
+from .base import ConsistencyEditorProvider, OutputTruncatedError
 
 
 class OllamaProvider(ConsistencyEditorProvider):
@@ -14,12 +16,33 @@ class OllamaProvider(ConsistencyEditorProvider):
     entirely instead of just hoping it finishes in time.
     """
 
-    def __init__(self, base_url: str, model: str, temperature: float, max_tokens: int, think: bool = False):
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        think: bool = False,
+        timeout_seconds: Optional[float] = None,
+    ):
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._think = think
+        self._timeout_seconds = timeout_seconds
+
+    @property
+    def _timeout(self) -> float:
+        """HTTP timeout: an explicit value, else scale with the token budget.
+
+        Kannada is token-heavy, so a max_tokens-sized reply can take far longer
+        than the old hard-coded 180 s. ``max_tokens / 8`` gives ~512 s at the
+        4096 default, with the 180 s floor kept for small budgets.
+        """
+        if self._timeout_seconds is not None:
+            return self._timeout_seconds
+        return max(180.0, self._max_tokens / 8)
 
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         response = httpx.post(
@@ -37,7 +60,13 @@ class OllamaProvider(ConsistencyEditorProvider):
                     "num_predict": self._max_tokens,
                 },
             },
-            timeout=180,
+            timeout=self._timeout,
         )
         response.raise_for_status()
-        return response.json()["message"]["content"]
+        payload = response.json()
+        if payload.get("done_reason") == "length":
+            raise OutputTruncatedError(
+                "Ollama stopped generating because it hit num_predict "
+                f"({self._max_tokens} tokens) — the reply is incomplete."
+            )
+        return payload["message"]["content"]
