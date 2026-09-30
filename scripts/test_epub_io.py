@@ -9,6 +9,7 @@ read from the package document. No model or network needed.
 Run: .venv/bin/python scripts/test_epub_io.py
 """
 
+import logging
 import shutil
 import sys
 import tempfile
@@ -29,6 +30,17 @@ def _doc(heading: str, body: str) -> str:
         f"<head><title>Book title</title></head>"
         f"<body><h1>{heading}</h1>{body}</body></html>"
     )
+
+
+class _RecordingHandler(logging.Handler):
+    """Collect log records instead of printing them (plain-script test)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
 
 
 def main() -> None:
@@ -149,6 +161,42 @@ def main() -> None:
         )
         assert read_epub_metadata(bare) == (None, None)
         assert [c.id for c in load_epub_chapters(bare)] == ["c1"]
+
+        # A spine that lists the same idref twice yields the document once, in
+        # the position of its first occurrence, and logs one warning naming the
+        # skipped idref. A document first listed linear="no" and later linear
+        # is returned (once), because duplicates are checked after filtering.
+        dupes = tmpdir / "duplicates.epub"
+        build_epub(
+            dupes,
+            [
+                {"id": "c1", "href": "c1.xhtml", "content": _doc("One", "<p>Alpha.</p>")},
+                {"id": "c2", "href": "c2.xhtml", "content": _doc("Two", "<p>Beta.</p>")},
+                {
+                    "id": "aside",
+                    "href": "aside.xhtml",
+                    "content": _doc("Aside", "<p>Aside.</p>"),
+                    "linear": "no",
+                },
+            ],
+            extra_spine=["c1", "aside", "c2"],
+        )
+        epub_io_logger = logging.getLogger("kannada_epub.epub_io")
+        handler = _RecordingHandler()
+        epub_io_logger.addHandler(handler)
+        try:
+            dup_chapters = load_epub_chapters(dupes)
+        finally:
+            epub_io_logger.removeHandler(handler)
+        assert [c.id for c in dup_chapters] == ["c1", "c2", "aside"], [
+            c.id for c in dup_chapters
+        ]
+        assert [p.text for p in dup_chapters[0].paragraphs] == ["One", "Alpha."]
+        assert len(handler.records) == 1, [r.getMessage() for r in handler.records]
+        message = handler.records[0].getMessage()
+        assert handler.records[0].levelno == logging.WARNING, message
+        assert "c1" in message and "c2" in message, message
+        assert "aside" not in message, message
 
         # A spine document missing from the zip is an error, not a silent skip.
         missing = tmpdir / "missing.epub"

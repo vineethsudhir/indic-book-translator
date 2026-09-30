@@ -1,3 +1,4 @@
+import logging
 import posixpath
 import warnings
 import zipfile
@@ -9,6 +10,8 @@ import lxml.etree as etree
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+
+logger = logging.getLogger(__name__)
 
 OPF_NS = "http://www.idpf.org/2007/opf"
 DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -85,6 +88,11 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
     - only ``application/xhtml+xml`` items are documents;
     - an XHTML item with the non-standard ``cover`` property is skipped
       (EbookLib typed it as a cover, not a document);
+    - the first occurrence of each spine ``idref`` wins; a later duplicate is
+      skipped and logged once per book (some exports, e.g. Wikisource, list
+      the same document more than once). Duplicates are checked after the
+      filters above, so a skipped non-linear first listing does not hide a
+      later linear one;
     - hrefs are URL-unquoted and resolved against the package directory;
     - a spine document missing from the zip is an error, not a silent skip.
     """
@@ -101,6 +109,8 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
             raise ValueError("package document has no spine")
 
         documents: list[tuple[str, bytes]] = []
+        seen: set[str] = set()
+        skipped_duplicates: list[str] = []
         for itemref in spine.iterfind(f"{{{OPF_NS}}}itemref"):
             if itemref.get("linear", "yes").lower() == "no":
                 continue
@@ -110,6 +120,12 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
                 continue
             if "cover" in item.get("properties", "").split():
                 continue
+            # Checked after the filters above, so a skipped non-linear first
+            # occurrence does not hide a later linear one.
+            if idref in seen:
+                skipped_duplicates.append(idref)
+                continue
+            seen.add(idref)
             name = posixpath.normpath(
                 posixpath.join(opf_dir, unquote(item.get("href", "")))
             )
@@ -119,6 +135,12 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
                 raise ValueError(
                     f"spine item {idref!r} points to missing entry {name!r}"
                 ) from exc
+        if skipped_duplicates:
+            logger.warning(
+                "Skipping duplicate spine idref(s) in %s: %s",
+                path,
+                ", ".join(skipped_duplicates),
+            )
         return documents
 
 

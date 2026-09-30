@@ -36,8 +36,13 @@ def build_epub(
     identifier: str = "fixture-001",
     extra_metadata: list[str] | None = None,
     nav_content: str | None = None,
+    extra_spine: list[str] | None = None,
 ) -> None:
-    """Write an EPUB 3 at ``path`` with ``documents`` plus a non-linear nav."""
+    """Write an EPUB 3 at ``path`` with ``documents`` plus a non-linear nav.
+
+    ``extra_spine`` appends raw ``idref`` values to the spine after the
+    documents, e.g. to reproduce exports that list the same document twice.
+    """
     manifest = [
         '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" '
         'properties="nav"/>'
@@ -54,6 +59,8 @@ def build_epub(
         if doc.get("in_spine", True):
             linear = f' linear="{doc["linear"]}"' if doc.get("linear") else ""
             spine.append(f'<itemref idref={quoteattr(doc["id"])}{linear}/>')
+    for idref in extra_spine or []:
+        spine.append(f"<itemref idref={quoteattr(idref)}/>")
 
     metadata = [
         f'<dc:identifier id="uid">{escape(identifier)}</dc:identifier>',
