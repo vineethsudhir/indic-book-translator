@@ -67,8 +67,12 @@ class EditedParagraph:
     text: str
 
 
+# The EMOTION line is optional: local models sometimes drop it for a single
+# paragraph while keeping the [P<n>] tag and text. Alignment comes from the
+# tag, so such a paragraph is kept and its emotion defaults to Narration.
 _PARAGRAPH_BLOCK_RE = re.compile(
-    r"\[P(\d+)\]\s*\n\s*EMOTION:\s*(\S.*?)\s*\n(.*?)(?=\n\s*\[P\d+\]|\Z)", re.DOTALL
+    r"\[P(\d+)\][ \t]*\n(?:\s*EMOTION:[ \t]*([^\n]*?)[ \t]*(?:\n|\Z))?(.*?)(?=\n\s*\[P\d+\]|\Z)",
+    re.DOTALL,
 )
 
 

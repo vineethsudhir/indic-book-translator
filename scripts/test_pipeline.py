@@ -27,7 +27,11 @@ from bs4 import BeautifulSoup
 
 from kannada_epub.book_translator import BookTranslator
 from kannada_epub.config import BookConfig
-from kannada_epub.consistency_editor import ConsistencyEditor
+from kannada_epub.consistency_editor import (
+    ConsistencyEditor,
+    EditorOutputError,
+    _parse_numbered_output,
+)
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
@@ -423,6 +427,29 @@ def _check_split_and_resume(tmp: Path) -> None:
     assert CHAPTER_ID in manifest["skipped"], manifest["skipped"]
 
 
+def _check_editor_parser() -> None:
+    """A paragraph whose EMOTION line the model dropped is kept, not "missing"."""
+    raw = (
+        "[P1]\nEMOTION: Anger\nಒಂದು\n\n"
+        "[P2]\nಎರಡು\nಮುಂದುವರಿಕೆ\n\n"
+        "[P3]\n\nEMOTION: sad\nಮೂರು\n\n"
+        "[P4]\nEMOTION:\nನಾಲ್ಕು"
+    )
+    parsed = _parse_numbered_output(raw, 4)
+    assert [p.text for p in parsed] == ["ಒಂದು", "ಎರಡು\nಮುಂದುವರಿಕೆ", "ಮೂರು", "ನಾಲ್ಕು"], parsed
+    assert [p.emotion for p in parsed] == ["Anger", "Narration", "Sad", "Narration"], parsed
+
+    # A tag with no text, or a missing tag, is still a mismatch.
+    for bad in ("[P1]\nEMOTION: Narration\nಒಂದು\n\n[P2]\nEMOTION: Narration\n",
+                "[P1]\nಒಂದು"):
+        try:
+            _parse_numbered_output(bad, 2)
+        except EditorOutputError as exc:
+            assert "missing [2]" in str(exc), exc
+        else:
+            raise AssertionError(f"expected a mismatch for {bad!r}")
+
+
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}
     source_item4 = source[CHAPTER_ID]
@@ -578,6 +605,8 @@ def main() -> None:
         _check_split_and_resume(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+    _check_editor_parser()
 
     # --- cloud-only import check (no local ML libs) ------------------------
     _check_cloud_only_import()
