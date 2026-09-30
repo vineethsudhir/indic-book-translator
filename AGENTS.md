@@ -15,8 +15,8 @@ they don't: invariants that break silently, and how to work here.
     `test_epub_io`,
     `test_epub_writer`, `test_tables`, `test_cover`,
     `test_qa`, `test_providers`,
-    `test_pipeline`, `test_app`, `test_tts_engine`, `test_queue`,
-    `test_importer`.
+    `test_pipeline`, `test_app`, `test_import_app`, `test_tts_engine`,
+    `test_queue`, `test_importer`.
   - Need local models, Ollama or API keys — only run when asked:
     `test_translation`, `test_tts`, `test_tts_voices`, `test_glossary`,
     `test_consistency_editor`, `test_book_translator`.

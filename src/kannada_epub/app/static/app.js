@@ -90,9 +90,9 @@
     appState.poll = null;
 
     const route = routeFromHash();
-    if (route === "/translate") {
+    if (route === "/translate" || route === "/translate/import") {
       setActiveNavigation("translate");
-      await renderTranslate();
+      await renderTranslate(route === "/translate/import");
     } else if (route === "/queue") {
       setActiveNavigation("queue");
       await renderQueue();
@@ -214,7 +214,215 @@
       <button class="button" id="choose-book">Choose EPUB…</button>
       <input class="sr-only" id="book-file" type="file"
         accept=".epub,application/epub+zip" aria-label="Choose an EPUB file">
+    </div>
+    <p class="import-entry">
+      ${button(
+        "No EPUB? Create one from a text or HTML file",
+        "quiet",
+        "id=open-import",
+      )}
+    </p>`;
+  }
+
+  // Import panel: turn a .txt/.html file into an EPUB, then translate it.
+  const importState = { import_id: null };
+
+  function importPanelMarkup() {
+    return `<div class="card import-panel" id="import-panel">
+      <p class="muted">Build an EPUB from a plain-text or HTML file, then
+        translate it like any other book.</p>
+      <div class="field">
+        <label class="field-label" for="import-file">Text or HTML file</label>
+        <input class="input" id="import-file" type="file"
+          accept=".txt,.html,.htm,text/plain,text/html"
+          aria-label="Choose a text or HTML file">
+      </div>
+      <label class="toggle-row">
+        <input class="switch" type="checkbox" id="import-ocr">
+        <span class="toggle-copy">
+          <strong>This is OCR text from a scanned book</strong>
+          <small>Removes page numbers and running headers, joins broken
+            lines.</small>
+        </span>
+      </label>
+      <div class="field">
+        <label class="field-label" for="import-title">Title</label>
+        <input class="input" id="import-title" type="text">
+      </div>
+      <div class="field">
+        <label class="field-label" for="import-author">Author</label>
+        <input class="input" id="import-author" type="text">
+      </div>
+      <div class="field">
+        <label class="field-label" for="import-date">Year</label>
+        <input class="input" id="import-date" type="text">
+      </div>
+      <div class="field">
+        <label class="field-label" for="import-source">Source (URL or
+          description)</label>
+        <input class="input" id="import-source" type="text">
+      </div>
+      <div class="actions">
+        ${button("Preview", "primary", "id=import-preview")}
+        ${button("Cancel", "quiet", "id=import-cancel")}
+      </div>
+      <div id="import-error"></div>
+      <div id="import-preview-area"></div>
+      <p class="rights-note">Check the preview before translating: automatic
+        clean-up can't fix every scanning error.</p>
     </div>`;
+  }
+
+  function importPreviewMarkup(data) {
+    const chapters = Array.isArray(data.chapters) ? data.chapters : [];
+    const total = Number(data.total_paragraphs) || 0;
+    const rows = chapters.map(chapter => {
+      const count = Number(chapter.paragraphs) || 0;
+      return `<li class="chapter-preview-row">
+        <strong>${escapeHtml(chapter.title)}</strong>
+        <span class="chapter-count">${count} paragraph${
+          count === 1 ? "" : "s"
+        }</span>
+        ${chapter.first ? `<small>${escapeHtml(chapter.first)}</small>` : ""}
+      </li>`;
+    }).join("");
+    const warnings = Array.isArray(data.warnings) && data.warnings.length
+      ? `<div class="source-warning">
+          <p>Check these before translating:</p>
+          <ul>${data.warnings
+            .map(warning => `<li>${escapeHtml(warning)}</li>`)
+            .join("")}</ul>
+        </div>`
+      : "";
+    const headings = Array.isArray(data.headings) ? data.headings.join("\n") : "";
+    return `<div class="section-gap">
+      <h3>Preview</h3>
+      <p class="muted">${chapters.length} chapter${
+        chapters.length === 1 ? "" : "s"
+      } · ${total} paragraph${total === 1 ? "" : "s"}</p>
+      <ul class="chapter-preview">${
+        rows || `<li class="chapter-preview-row">No chapters were found.</li>`
+      }</ul>
+      ${warnings}
+      <div class="field">
+        <label class="field-label" for="import-headings">Chapter headings (one
+          per line)</label>
+        <textarea class="input" id="import-headings" rows="5">${
+          escapeHtml(headings)
+        }</textarea>
+        <p class="field-help">Edit a heading and press Update preview to
+          re-split the chapters.</p>
+      </div>
+      <div class="actions">
+        ${button("Update preview", "", "id=import-update")}
+        ${button("Create EPUB", "primary", "id=import-create")}
+      </div>
+      <div id="import-preview-error"></div>
+    </div>`;
+  }
+
+  function connectImportPanel() {
+    const fileInput = document.getElementById("import-file");
+    fileInput?.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const title = document.getElementById("import-title");
+      if (title && !title.value.trim()) {
+        title.value = file.name.replace(/\.[^.]+$/, "");
+      }
+    });
+    document.getElementById("import-preview")?.addEventListener("click", previewImport);
+    document.getElementById("import-cancel")?.addEventListener("click", () => {
+      location.hash = "#/translate";
+    });
+    bindImportPreviewButtons();
+  }
+
+  function bindImportPreviewButtons() {
+    document.getElementById("import-update")?.addEventListener("click", updateImportPreview);
+    document.getElementById("import-create")?.addEventListener("click", createImportBook);
+  }
+
+  async function previewImport() {
+    const errorBox = document.getElementById("import-error");
+    errorBox.innerHTML = "";
+    const file = document.getElementById("import-file")?.files?.[0];
+    if (!file) {
+      errorBox.innerHTML = inlineMessage("Choose a .txt or .html file.", true);
+      return;
+    }
+    const body = new FormData();
+    body.append("file", file);
+    body.append("ocr", document.getElementById("import-ocr").checked ? "true" : "false");
+    await sendImportPreview(body, errorBox);
+  }
+
+  async function updateImportPreview() {
+    const errorBox = document.getElementById("import-error");
+    errorBox.innerHTML = "";
+    if (!importState.import_id) {
+      errorBox.innerHTML = inlineMessage("Preview a file first.", true);
+      return;
+    }
+    const body = new FormData();
+    body.append("import_id", importState.import_id);
+    body.append("ocr", document.getElementById("import-ocr").checked ? "true" : "false");
+    body.append("headings", document.getElementById("import-headings")?.value || "");
+    await sendImportPreview(body, errorBox);
+  }
+
+  async function sendImportPreview(body, errorBox) {
+    const area = document.getElementById("import-preview-area");
+    errorBox.innerHTML = inlineMessage("Reading the file…");
+    try {
+      const data = await api("/api/import/preview", { method: "POST", body });
+      importState.import_id = data.import_id;
+      errorBox.innerHTML = "";
+      area.innerHTML = importPreviewMarkup(data);
+      bindImportPreviewButtons();
+    } catch (error) {
+      errorBox.innerHTML = inlineMessage(error.message, true);
+    }
+  }
+
+  async function createImportBook() {
+    const errorBox = document.getElementById("import-preview-error");
+    errorBox.innerHTML = "";
+    if (!importState.import_id) {
+      errorBox.innerHTML = inlineMessage("Preview the file first.", true);
+      return;
+    }
+    const title = document.getElementById("import-title").value.trim();
+    if (!title) {
+      errorBox.innerHTML = inlineMessage("Enter a title for the book.", true);
+      return;
+    }
+    const headings = (document.getElementById("import-headings")?.value || "")
+      .split("\n")
+      .map(line => line.trim())
+      .filter(Boolean);
+    const request = {
+      import_id: importState.import_id,
+      ocr: document.getElementById("import-ocr").checked,
+      headings,
+      title,
+      author: document.getElementById("import-author").value.trim(),
+      date: document.getElementById("import-date").value.trim(),
+      source: document.getElementById("import-source").value.trim(),
+    };
+    errorBox.innerHTML = inlineMessage("Building the EPUB…");
+    try {
+      // Behave exactly like a fresh upload: the response is the book card.
+      appState.book = await api("/api/import/create", {
+        method: "POST",
+        body: json(request),
+      });
+      appState.sectionSelections = null;
+      importState.import_id = null;
+      location.hash = "#/translate";
+    } catch (error) {
+      errorBox.innerHTML = inlineMessage(error.message, true);
+    }
   }
 
   function optionsMarkup(settings) {
@@ -381,7 +589,7 @@
     }
   }
 
-  async function renderTranslate() {
+  async function renderTranslate(importMode = false) {
     const state = await refreshState();
     const run = await api("/api/run");
     appState.run = run;
@@ -397,7 +605,7 @@
       <span class="step-number">1</span>
       <div class="step-body">
         <h2 class="step-title">Choose a book</h2>
-        ${bookSelectionMarkup(appState.book)}
+        ${importMode ? importPanelMarkup() : bookSelectionMarkup(appState.book)}
       </div>
     </section>
     ${optionsMarkup(state.settings)}
@@ -426,7 +634,11 @@
       </div>
     </section>`;
 
-    connectBookPicker();
+    if (importMode) {
+      connectImportPanel();
+    } else {
+      connectBookPicker();
+    }
     connectTranslateOptions();
     connectSections();
     connectRunControls(run);
@@ -445,6 +657,10 @@
       appState.book = null;
       appState.sectionSelections = null;
       renderTranslate();
+    });
+
+    document.getElementById("open-import")?.addEventListener("click", () => {
+      location.hash = "#/translate/import";
     });
 
     const dropzone = document.getElementById("dropzone");

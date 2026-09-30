@@ -55,6 +55,18 @@ from kannada_epub.consistency_editor import ConsistencyEditor  # noqa: E402
 from kannada_epub.glossary import GlossaryStore  # noqa: E402
 from kannada_epub.pipeline import PipelineComponents  # noqa: E402
 
+# A small text book for the import panel, with a contents list so the preview
+# splits into several chapters.
+IMPORT_SAMPLE = DATA_DIR / "import-sample.txt"
+IMPORT_SAMPLE.write_text(
+    "CONTENTS\n\nPAGE\n\n"
+    "Alpha Story 1\n\nBeta Story 5\n\nGamma Story 9\n\n"
+    "Alpha Story\n\nThe alpha body.\n\n"
+    "Beta Story\n\nThe beta body.\n\n"
+    "Gamma Story\n\nThe gamma body.\n",
+    encoding="utf-8",
+)
+
 
 def fake_components() -> PipelineComponents:
     return PipelineComponents(
@@ -249,9 +261,65 @@ async def check_sections_controls(devtools: DevTools) -> None:
     devtools.assert_no_browser_errors("sections controls")
 
 
+async def check_import_panel(devtools: DevTools) -> None:
+    """The import button opens the panel, and a preview lists chapters."""
+    devtools.clear_events()
+    await devtools.evaluate("location.hash = '#/translate'")
+    await wait_for_value(
+        devtools,
+        "document.querySelector('#open-import') ? 1 : 0",
+        lambda value: value == 1,
+    )
+    await devtools.evaluate("document.getElementById('open-import').click()")
+    await wait_for_value(
+        devtools,
+        "document.querySelector('#import-panel') ? 1 : 0",
+        lambda value: value == 1,
+    )
+    controls = await devtools.evaluate(
+        "['#import-file','#import-ocr','#import-title','#import-preview',"
+        "'#import-cancel'].every(s => document.querySelector(s))"
+    )
+    assert controls is True, "import panel controls are missing"
+
+    document = await devtools.call("DOM.getDocument")
+    node = await devtools.call(
+        "DOM.querySelector", nodeId=document["root"]["nodeId"], selector="#import-file"
+    )
+    assert node.get("nodeId"), "import file input was not found"
+    await devtools.call(
+        "DOM.setFileInputFiles", files=[str(IMPORT_SAMPLE)], nodeId=node["nodeId"]
+    )
+    prefilled = await wait_for_value(
+        devtools,
+        "document.getElementById('import-title').value",
+        lambda value: value == "import-sample",
+    )
+    assert prefilled == "import-sample", prefilled
+
+    await devtools.evaluate("document.getElementById('import-preview').click()")
+    chapter_count = await wait_for_value(
+        devtools,
+        "document.querySelectorAll('.chapter-preview-row').length",
+        lambda value: value and value >= 3,
+    )
+    assert chapter_count >= 3, chapter_count
+    headings = await devtools.evaluate(
+        "document.getElementById('import-headings')?.value || ''"
+    )
+    assert "Alpha Story" in headings and "Beta Story" in headings, headings
+    await asyncio.sleep(0.2)
+    devtools.assert_no_browser_errors("import panel")
+
+
 async def upload_and_translate(devtools: DevTools) -> tuple[str, str]:
     await devtools.evaluate("location.hash = '#/translate'")
     await wait_for_heading(devtools, "Bring a book to Kannada")
+    await wait_for_value(
+        devtools,
+        "document.querySelector('#book-file') ? 1 : 0",
+        lambda value: value == 1,
+    )
     document = await devtools.call("DOM.getDocument")
     input_node = await devtools.call(
         "DOM.querySelector",
@@ -466,6 +534,7 @@ async def run_browser_checks(base_url: str, devtools_port: int, profile: str) ->
                 "Emulation.setEmulatedMedia",
                 features=[{"name": "prefers-color-scheme", "value": "light"}],
             )
+            await check_import_panel(devtools)
             book_id, first_chapter = await upload_and_translate(devtools)
             await check_queue_page(devtools, book_id)
             await check_reader(devtools, book_id, first_chapter)

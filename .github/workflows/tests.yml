@@ -37,6 +37,7 @@ jobs:
           python scripts/test_providers.py
           python scripts/test_pipeline.py
           python scripts/test_app.py
+          python scripts/test_import_app.py
           python scripts/test_tts_engine.py
           python scripts/test_queue.py
           python scripts/test_ui_browser.py

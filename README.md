@@ -64,7 +64,10 @@ Saved keys are stored in your user data folder and are not shown again.
 **Quality check (QA)** or **Create audiobook**, and press **Translate book**.
 **Quick preview** limits the first run to a small number of paragraphs per
 chapter (two by default). When it finishes, use **Open in Books app**, **Show in
-folder**, or the download links.
+folder**, or the download links. With no EPUB, choose **No EPUB? Create one from
+a text or HTML file** to build one from a `.txt` or `.html` file: tick **This is
+OCR text from a scanned book** for scanned text, fill in the title and details,
+review the detected chapters in **Preview**, then press **Create EPUB**.
 
 **5. Queue several books.** On **Queue**, upload one or more EPUBs, tick the
 books to translate, and press **Add selected to queue**. **Start queue** then

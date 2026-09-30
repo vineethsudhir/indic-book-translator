@@ -844,6 +844,50 @@ label.field-label {
   white-space: nowrap;
   border: 0;
 }
+/* Import panel (text/HTML -> EPUB) */
+.import-entry {
+  margin: 10px 0 0;
+  text-align: center;
+}
+.import-panel .field:first-of-type {
+  margin-top: 0;
+}
+.import-panel textarea.input {
+  min-height: 110px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 13px;
+}
+.chapter-preview {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+.chapter-preview-row {
+  padding: 10px 13px;
+  border-bottom: 1px solid var(--line);
+}
+.chapter-preview-row:last-child {
+  border-bottom: 0;
+}
+.chapter-preview-row strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.chapter-preview-row .chapter-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.chapter-preview-row small {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
 /* Responsive layout */
 @media (max-width: 760px) {
   .sidebar {

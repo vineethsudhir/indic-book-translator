@@ -6,18 +6,20 @@ import argparse
 import hmac
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Annotated, Callable
 from urllib.parse import quote
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -25,9 +27,10 @@ from pydantic import ValidationError
 from ..edition_check import edition_notes, edition_payload
 from ..epub_check import check_source_epub
 from ..epub_io import load_epub_chapters, read_epub_metadata
+from ..importer import build_epub, import_html, import_text
 from ..pipeline import PipelineComponents, RunOptions, RunResult, output_file_names
 from .book_queue import BookQueue, ItemNotFound, ItemRunning, StateError
-from .paths import books_dir, outputs_dir
+from .paths import books_dir, data_dir, outputs_dir
 from .runner import BookRun
 from .settings import (
     KNOWN_KEYS,
@@ -44,6 +47,66 @@ from .settings import (
 
 def _dedupe(items: list[str]) -> list[str]:
     return list(dict.fromkeys(item for item in items if item))
+
+
+# --- import (text/HTML -> EPUB) -------------------------------------------
+
+# Suffix -> result kind. Everything else is refused with a friendly message.
+_IMPORT_EXTENSIONS = {".txt": "text", ".html": "html", ".htm": "html"}
+_IMPORT_MAX_BYTES = 20 * 1024 * 1024
+_IMPORT_TTL_SECONDS = 24 * 60 * 60
+_IMPORT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_IMPORT_ID_MESSAGE = "That upload has expired. Choose the file again."
+
+
+def _imports_dir() -> Path:
+    """Return (and create) the app-data folder holding pending imports."""
+    path = data_dir() / "imports"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _clean_stale_imports() -> None:
+    """Delete imports older than the 24-hour preview window."""
+    imports = data_dir() / "imports"
+    if not imports.is_dir():
+        return
+    cutoff = time.time() - _IMPORT_TTL_SECONDS
+    for entry in imports.iterdir():
+        try:
+            if entry.is_file() and not entry.is_symlink() and entry.stat().st_mtime < cutoff:
+                entry.unlink(missing_ok=True)
+        except OSError:  # one bad entry must not stop the sweep
+            pass
+
+
+def _resolve_import(import_id: str) -> Path:
+    """Resolve an ``import_id`` against the real imports listing, or 404."""
+    if not isinstance(import_id, str) or not _IMPORT_ID_RE.fullmatch(import_id):
+        raise HTTPException(404, _IMPORT_ID_MESSAGE)
+    imports = data_dir() / "imports"
+    if imports.is_dir():
+        for entry in imports.iterdir():
+            if (
+                entry.is_file()
+                and not entry.is_symlink()
+                and entry.stem == import_id
+                and entry.suffix.lower() in _IMPORT_EXTENSIONS
+            ):
+                return entry
+    raise HTTPException(404, _IMPORT_ID_MESSAGE)
+
+
+def _used_headings(result) -> list[str]:
+    """The headings the importer actually split on, minus "Front matter"."""
+    return [chapter.title for chapter in result.chapters if chapter.title != "Front matter"]
+
+
+def _safe_import_filename(title: str) -> str:
+    """A filesystem-safe stem built from the title (letters, digits, space, - _)."""
+    name = re.sub(r"[^\w \-]", "", title)
+    name = "_".join(name.split())
+    return name[:80] or "imported_book"
 
 
 def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], list[str]]:
@@ -83,6 +146,48 @@ def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], li
 def _metadata(path: Path) -> tuple[str, str]:
     title, author = read_epub_metadata(path)
     return title or path.stem, author or "Unknown author"
+
+
+def _book_response(dest: Path) -> dict:
+    """The post-upload analysis shared by ``/api/books`` and the importer.
+
+    Reads the EPUB's metadata and chapters (raising if it cannot be read, so
+    the caller can report or delete the file) and adds the source-quality and
+    edition notes that a failed check must never fail the response over.
+    """
+    title, author = _metadata(dest)
+    settings = load_settings()
+    chapters = load_epub_chapters(dest, exclude_ids=settings.exclude_ids)
+    try:
+        source_problems = check_source_epub(dest)
+        problem_messages = [
+            f"{Path(problem.path).name or dest.name}: {problem.message}"
+            for problem in source_problems
+        ][:20]
+        problem_count = len(source_problems)
+    except Exception:  # noqa: BLE001 — a check failure must not fail the upload
+        problem_messages = None
+        problem_count = 0
+    try:
+        edition = edition_payload(edition_notes(dest, chapters))
+    except Exception:  # noqa: BLE001 — a check failure must not fail the upload
+        edition = None
+    response = {
+        "book_id": dest.stem,
+        "filename": dest.name,
+        "title": title,
+        "author": author,
+        "source_problem_count": problem_count,
+        "chapters": [
+            {"id": c.id, "title": c.title or c.id, "paragraphs": len(c.paragraphs)}
+            for c in chapters
+        ],
+    }
+    if problem_messages is not None:
+        response["source_problems"] = problem_messages
+    if edition is not None:
+        response["edition"] = edition
+    return response
 
 
 def _safe_title(path: Path) -> str:
@@ -514,41 +619,143 @@ def create_app(
         content = await file.read()
         dest.write_bytes(content)
         try:
-            title, author = _metadata(dest)
-            settings = load_settings()
-            chapters = load_epub_chapters(dest, exclude_ids=settings.exclude_ids)
+            return _book_response(dest)
         except Exception as exc:  # malformed zip/container/metadata
             dest.unlink(missing_ok=True)
             raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
-        try:
-            source_problems = check_source_epub(dest)
-            problem_messages = [
-                f"{Path(problem.path).name or dest.name}: {problem.message}"
-                for problem in source_problems
-            ][:20]
-            problem_count = len(source_problems)
-        except Exception:  # noqa: BLE001 — a check failure must not fail the upload
-            problem_messages = None
-            problem_count = 0
-        try:
-            edition = edition_payload(edition_notes(dest, chapters))
-        except Exception:  # noqa: BLE001 — a check failure must not fail the upload
-            edition = None
-        response = {
-            "book_id": dest.stem,
-            "filename": dest.name,
-            "title": title,
-            "author": author,
-            "source_problem_count": problem_count,
+
+    @app.post("/api/import/preview", dependencies=[Depends(require_token)])
+    async def import_preview(
+        file: Annotated[UploadFile | None, File()] = None,
+        ocr: Annotated[str, Form()] = "false",
+        headings: Annotated[str, Form()] = "",
+        import_id: Annotated[str, Form()] = "",
+    ):
+        _clean_stale_imports()
+        import_id = import_id.strip()
+        ocr_flag = ocr.strip().lower() == "true"
+        headings = [line.strip() for line in headings.splitlines() if line.strip()]
+
+        if import_id:
+            source = _resolve_import(import_id)
+            ext = source.suffix.lower()
+            kind = _IMPORT_EXTENSIONS[ext]
+            content = source.read_bytes()
+        elif file is not None:
+            filename = Path((file.filename or "").replace("\\", "/")).name
+            ext = Path(filename).suffix.lower()
+            kind = _IMPORT_EXTENSIONS.get(ext)
+            if kind is None:
+                raise HTTPException(400, "Choose a .txt or .html file.")
+            # Read at most one byte past the limit, so an oversized upload
+            # is refused without holding all of it in memory.
+            content = await file.read(_IMPORT_MAX_BYTES + 1)
+            if len(content) > _IMPORT_MAX_BYTES:
+                raise HTTPException(413, "This file is larger than 20 MB.")
+            import_id = uuid.uuid4().hex
+            dest = _imports_dir() / f"{import_id}{ext}"
+            dest.write_bytes(content)
+        else:
+            raise HTTPException(400, "Choose a .txt or .html file.")
+
+        text = content.decode("utf-8", errors="replace")
+        if kind == "html":
+            result = import_html(text, headings=headings or None)
+        else:
+            result = import_text(text, ocr=ocr_flag, headings=headings or None)
+
+        return {
+            "import_id": import_id,
+            "kind": kind,
             "chapters": [
-                {"id": c.id, "title": c.title or c.id, "paragraphs": len(c.paragraphs)}
-                for c in chapters
+                {
+                    "title": chapter.title,
+                    "paragraphs": len(chapter.paragraphs),
+                    "first": (chapter.paragraphs[0] if chapter.paragraphs else "")[:200],
+                }
+                for chapter in result.chapters
             ],
+            "warnings": result.warnings,
+            "detected_headings": result.detected_headings,
+            "headings": _used_headings(result),
+            "total_paragraphs": sum(
+                len(chapter.paragraphs) for chapter in result.chapters
+            ),
         }
-        if problem_messages is not None:
-            response["source_problems"] = problem_messages
-        if edition is not None:
-            response["edition"] = edition
+
+    @app.post("/api/import/create", dependencies=[Depends(require_token)])
+    async def import_create(request: Request):
+        try:
+            payload = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "Expected import options as a JSON object.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Expected import options as a JSON object.")
+
+        source = _resolve_import(str(payload.get("import_id") or ""))
+
+        title = payload.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise HTTPException(400, "Enter a title for the book.")
+        title = title.strip()
+        if len(title) > 300:
+            raise HTTPException(400, "The title is too long (300 characters maximum).")
+
+        def optional_text(value: object, limit: int, label: str) -> str | None:
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise HTTPException(400, f"{label} must be text.")
+            value = value.strip()
+            if not value:
+                return None
+            if len(value) > limit:
+                raise HTTPException(
+                    400, f"{label} is too long ({limit} characters maximum)."
+                )
+            return value
+
+        author = optional_text(payload.get("author"), 300, "Author")
+        date = optional_text(payload.get("date"), 20, "Year")
+        source_url = optional_text(payload.get("source"), 500, "Source")
+
+        headings: list[str] | None = None
+        raw_headings = payload.get("headings")
+        if raw_headings is not None:
+            if not isinstance(raw_headings, list) or not all(
+                isinstance(item, str) for item in raw_headings
+            ):
+                raise HTTPException(400, "Chapter headings must be a list of text.")
+            headings = [item.strip() for item in raw_headings if item.strip()] or None
+
+        ocr = payload.get("ocr", False) is True
+        ext = source.suffix.lower()
+        text = source.read_bytes().decode("utf-8", errors="replace")
+        if ext == ".html" or ext == ".htm":
+            result = import_html(text, headings=headings)
+        else:
+            result = import_text(text, ocr=ocr, headings=headings)
+
+        if not any(chapter.paragraphs for chapter in result.chapters):
+            raise HTTPException(400, "No text was found in this file.")
+
+        base = _safe_import_filename(title)
+        dest_dir = books_dir()
+        dest = dest_dir / f"{base}.epub"
+        suffix = 2
+        while dest.exists():
+            dest = dest_dir / f"{base}_{suffix}.epub"
+            suffix += 1
+        build_epub(
+            dest,
+            title=title,
+            author=author,
+            date=date,
+            source=source_url,
+            chapters=result.chapters,
+        )
+        response = _book_response(dest)
+        source.unlink(missing_ok=True)
         return response
 
     @app.post("/api/run", dependencies=[Depends(require_token)])
