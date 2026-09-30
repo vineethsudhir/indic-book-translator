@@ -32,7 +32,9 @@ they don't: invariants that break silently, and how to work here.
   `BeautifulSoup(content, "lxml").find_all(BLOCK_TAGS)`; nested blocks are
   skipped but still advance the enumeration. Changing `BLOCK_TAGS`, the
   parser, or the skip rule shifts indices and invalidates existing
-  checkpoints/outputs.
+  checkpoints/outputs. The writer — including `strip_gutenberg`, which
+  hollows out boilerplate — must preserve the `BLOCK_TAGS` sequence of every
+  document, so output and source indices line up.
 - **Batch positions are not DOM indices.** `TranslatedBatch.paragraph_start`
   indexes the filtered `chapter.paragraphs` list; convert with
   `translations_from_batches`.

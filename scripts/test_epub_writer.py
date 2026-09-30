@@ -19,7 +19,7 @@ import lxml.etree as ET
 from bs4 import BeautifulSoup
 from epub_fixture import build_epub
 
-from kannada_epub.epub_io import load_epub_chapters
+from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.epub_writer import (
     MACHINE_TRANSLATION_CONTRIBUTOR,
     find_gutenberg_mentions,
@@ -47,6 +47,19 @@ def _manifest(zf: zipfile.ZipFile, opf_path: str) -> dict[str, str]:
         item.get("id"): item.get("href")
         for item in root.findall(f".//{{{OPF_NS}}}manifest/{{{OPF_NS}}}item")
     }
+
+
+def _block_tags(data: bytes) -> list[str]:
+    """The ``BLOCK_TAGS`` tag-name sequence of a document."""
+    return [tag.name for tag in BeautifulSoup(data, "lxml").find_all(BLOCK_TAGS)]
+
+
+def _chapter_indices(path, **kwargs) -> list[tuple[str, list[int]]]:
+    """``(chapter id, [Paragraph.index ...])`` for a book."""
+    return [
+        (chapter.id, [p.index for p in chapter.paragraphs])
+        for chapter in load_epub_chapters(path, **kwargs)
+    ]
 
 
 def main() -> None:
@@ -211,12 +224,19 @@ def main() -> None:
                         '</head><body>'
                         '<header id="pg-header" class="pg-boilerplate extra">'
                         '<h1 id="header-heading">Project Gutenberg Header</h1>'
-                        '<p>License <a id="license-fragment">text</a></p></header>'
+                        '<p>License <a id="license-fragment">text</a></p>'
+                        '<ul><li>Item <a id="list-fragment">one</a></li></ul>'
+                        '<table><tr><td>Cell <a id="cell-fragment">x</a></td></tr></table>'
+                        '<p>Unlinked <a id="unlinked-anchor">anchor</a></p>'
+                        '</header>'
                         '<p class="not-pg-boilerplate">The actual book text. '
                         '<a href="#license-fragment">See note</a>. An '
+                        '<a href="#list-fragment">item</a> and a '
+                        '<a href="#cell-fragment">cell</a> note. An '
                         '<a href="https://www.gutenberg.org/ebooks/1">illustrated edition</a>'
                         ' exists.</p>'
                         '<footer id="pg-footer"><p id="footer-fragment">License.</p>'
+                        '<div id="project-gutenberg-license"><p>Full license.</p></div>'
                         '</footer></body></html>'
                     ),
                 },
@@ -271,13 +291,38 @@ def main() -> None:
             assert book_soup.title.get_text() == "Example"
             assert book_soup.find(id="pg-header").get_text(strip=True) == ""
             assert book_soup.find(id="pg-footer").get_text(strip=True) == ""
-            # A linked fragment inside boilerplate survives as an empty span;
-            # unlinked ones are dropped, and the temporary marker never ships.
+            # An id on a kept block element stays on it (now empty); an id on
+            # a removed inline element becomes an empty retained span.
+            for kept_id, kept_tag in (
+                ("header-heading", "h1"),
+                ("footer-fragment", "p"),
+            ):
+                kept = book_soup.find(id=kept_id)
+                assert kept is not None and kept.name == kept_tag, kept_id
+                assert kept.get_text(strip=True) == "", kept_id
+            # A kept container whose id names Gutenberg loses the id (nothing
+            # links to it) but stays, so the block sequence is unchanged.
+            assert book_soup.find(id="project-gutenberg-license") is None
+            assert not book_soup.find_all(attrs={"data-kn-kept-pg-id": True})
             fragment = book_soup.find(id="license-fragment")
             assert fragment is not None and fragment.name == "span"
             assert fragment.get_text(strip=True) == "" and not fragment.attrs.keys() - {"id"}
-            for fragment_id in ("header-heading", "footer-fragment"):
-                assert book_soup.find(id=fragment_id) is None, fragment_id
+            # A boilerplate <ul><li> list and a <table><tr><td> survive,
+            # emptied but with their markup and linked ids intact.
+            ul = book_soup.find("ul")
+            assert ul is not None and ul.find("li") is not None
+            assert ul.get_text(strip=True) == ""
+            list_fragment = book_soup.find(id="list-fragment")
+            assert list_fragment is not None and list_fragment.name == "span"
+            assert list_fragment.find_parent("li") is not None
+            table = book_soup.find("table")
+            assert table is not None and table.find("td") is not None
+            assert table.get_text(strip=True) == ""
+            cell_fragment = book_soup.find(id="cell-fragment")
+            assert cell_fragment is not None and cell_fragment.name == "span"
+            assert cell_fragment.find_parent("td") is not None
+            # An unlinked id on a removed inline element is dropped.
+            assert book_soup.find(id="unlinked-anchor") is None
             assert book_soup.find("meta", attrs={"name": "generator"}) is None
             # Links to gutenberg.org are unwrapped; their text stays.
             assert "illustrated edition" in book_soup.get_text()
@@ -291,6 +336,23 @@ def main() -> None:
             assert ncx_root.find('.//*[@id="pg"]') is None
             assert ncx_root.find('.//*[@id="story"]') is not None
             assert ncx_root.find('.//*[@name="dtb:generator"]') is None
+
+        # Stripping must leave every document's BLOCK_TAGS sequence unchanged,
+        # so output and source paragraph indices line up.
+        with zipfile.ZipFile(pg_source) as pg_zip:
+            src_book = pg_zip.read("EPUB/book.xhtml")
+        with zipfile.ZipFile(pg_output) as pg_zip:
+            out_book = pg_zip.read("EPUB/book.xhtml")
+        assert _block_tags(src_book) == _block_tags(out_book), (
+            _block_tags(src_book),
+            _block_tags(out_book),
+        )
+        assert len(_block_tags(src_book)) == len(_block_tags(out_book))
+        # With boilerplate blocks retained as empty shells, both loads (with
+        # boilerplate skipped) agree on chapter ids and paragraph indices.
+        assert _chapter_indices(
+            pg_output, skip_gutenberg_boilerplate=True
+        ) == _chapter_indices(pg_source, skip_gutenberg_boilerplate=True)
 
         # --- URL-encoded manifest hrefs resolve like the reader resolves them
         encoded_source = tmpdir / "encoded.epub"

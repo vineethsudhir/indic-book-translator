@@ -31,7 +31,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import lxml.etree as etree
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 from .epub_io import BLOCK_TAGS, Chapter, find_opf_path
 
@@ -43,6 +43,60 @@ _PG_TITLE_SUFFIX = re.compile(r"\s*\|\s*Project Gutenberg\s*$", re.IGNORECASE)
 # Temporary marker on id spans kept from emptied boilerplate; removed before
 # writing, together with every marked span nothing links to.
 _RETAINED_ATTR = "data-kn-retained-id"
+# Temporary marker on a kept boilerplate element whose id mentions Gutenberg:
+# the id is dropped before writing unless something links to it.
+_KEPT_PG_ID_ATTR = "data-kn-kept-pg-id"
+
+# Elements kept when "hollowing out" Project Gutenberg boilerplate: the block
+# elements (``BLOCK_TAGS``) are the ``Paragraph.index`` join key and must
+# survive, and these containers keep the surrounding markup valid XHTML.
+# Everything else inside the boilerplate is removed; an ``id`` on a removed
+# element survives as an empty retained ``<span>``.
+_HOLLOW_CONTAINER_TAGS = frozenset(
+    {
+        "div",
+        "section",
+        "header",
+        "footer",
+        "ul",
+        "ol",
+        "dl",
+        "dt",
+        "dd",
+        "table",
+        "thead",
+        "tbody",
+        "tfoot",
+        "tr",
+        "blockquote",
+        "figure",
+        "pre",
+        "hr",
+    }
+)
+_HOLLOW_KEEP_TAGS = frozenset(BLOCK_TAGS) | _HOLLOW_CONTAINER_TAGS
+
+# A retained ``<span>`` cannot sit directly in these; it is moved into the
+# nearest kept block (a following/preceding ``li``/``td``/…) instead.
+_INVALID_RETAINED_PARENTS = frozenset(
+    {"ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "tr"}
+)
+_RETAINED_TARGET_TAGS = (
+    "li",
+    "td",
+    "th",
+    "p",
+    "dt",
+    "dd",
+    "caption",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+)
 
 # Marks every output as unreviewed machine translation, so a copy that gets
 # shared still says what it is.
@@ -231,21 +285,79 @@ def _has_gutenberg_boilerplate(tag) -> bool:
     return "pg-boilerplate" in classes or tag.get("id") in {"pg-header", "pg-footer"}
 
 
+def _first_retained_target(tag):
+    """The element a relocated retained ``<span>`` can be placed in."""
+    if tag.name in _RETAINED_TARGET_TAGS:
+        return tag
+    return tag.find(list(_RETAINED_TARGET_TAGS))
+
+
+def _relocate_retained_spans(soup: BeautifulSoup, element) -> None:
+    """Move retained spans out of elements that cannot contain a span."""
+    for span in element.find_all(attrs={_RETAINED_ATTR: True}):
+        parent = span.parent
+        if parent is None or parent.name not in _INVALID_RETAINED_PARENTS:
+            continue
+        target = None
+        prepend = False
+        for sibling in span.next_siblings:
+            if isinstance(sibling, Tag):
+                target = _first_retained_target(sibling)
+                if target is not None:
+                    prepend = True
+                    break
+        if target is None:
+            for sibling in span.previous_siblings:
+                if isinstance(sibling, Tag):
+                    target = _first_retained_target(sibling)
+                    if target is not None:
+                        break
+        if target is None:
+            target = element
+        span.extract()
+        if prepend:
+            target.insert(0, span)
+        else:
+            target.append(span)
+
+
+def _hollow_boilerplate_element(soup: BeautifulSoup, element) -> None:
+    """Empty a boilerplate element without changing its block sequence.
+
+    Removes every text node (and comment) and every non-structural
+    descendant, but keeps ``BLOCK_TAGS`` elements and their containers, so
+    ``find_all(BLOCK_TAGS)`` on the output returns the same tags in the same
+    order as on the input. An ``id`` on a removed element becomes an empty
+    retained ``<span>``; an ``id`` on a kept element stays on it.
+    """
+    for node in list(element.descendants):
+        if isinstance(node, NavigableString):
+            node.extract()
+
+    # Deepest-first: a removed element's children are already unwrapped (and
+    # their ids already turned into spans) before the element itself is.
+    for tag in reversed(element.find_all(True)):
+        if tag.name in _HOLLOW_KEEP_TAGS:
+            if "gutenberg" in (tag.get("id") or "").lower():
+                tag[_KEPT_PG_ID_ATTR] = ""
+            continue
+        identifier = tag.get("id")
+        if identifier:
+            span = soup.new_tag("span")
+            span["id"] = identifier
+            span[_RETAINED_ATTR] = ""
+            tag.insert_before(span)
+        tag.unwrap()
+
+    _relocate_retained_spans(soup, element)
+
+
 def _strip_boilerplate_elements(soup: BeautifulSoup) -> None:
     candidates = [tag for tag in soup.find_all(True) if _has_gutenberg_boilerplate(tag)]
     for element in candidates:
         if any(_has_gutenberg_boilerplate(parent) for parent in element.parents):
             continue
-        descendant_ids = [
-            descendant.get("id")
-            for descendant in element.find_all(attrs={"id": True})
-        ]
-        element.clear()
-        for identifier in descendant_ids:
-            anchor = soup.new_tag("span")
-            anchor["id"] = identifier
-            anchor[_RETAINED_ATTR] = ""
-            element.append(anchor)
+        _hollow_boilerplate_element(soup, element)
 
 
 def _is_top_level_toc_list(ol, top_toc_list) -> bool:
@@ -338,6 +450,10 @@ def _drop_unreferenced_retained_ids(content: bytes, referenced: set[str]) -> byt
             del span[_RETAINED_ATTR]
         else:
             span.decompose()
+    for kept in soup.find_all(attrs={_KEPT_PG_ID_ATTR: True}):
+        del kept[_KEPT_PG_ID_ATTR]
+        if kept.get("id") not in referenced:
+            del kept["id"]
     return _serialize_xhtml(content, soup)
 
 
@@ -591,7 +707,7 @@ def write_translated_epub(
 
             referenced = _fragment_targets(modified_docs)
             for doc_path, data in list(modified_docs.items()):
-                if _RETAINED_ATTR.encode() in data:
+                if _RETAINED_ATTR.encode() in data or _KEPT_PG_ID_ATTR.encode() in data:
                     modified_docs[doc_path] = _drop_unreferenced_retained_ids(data, referenced)
 
         added_items: list[tuple[str, str, str]] = [
