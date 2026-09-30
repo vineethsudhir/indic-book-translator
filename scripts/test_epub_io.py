@@ -174,6 +174,132 @@ def main() -> None:
         assert restored["item14"].paragraphs[4].text == "Footer license."
         assert restored["item14"].paragraphs[3].text == "Ordinary text."
 
+        # Wikisource ws-export boilerplate. A licenseContainer banner inside a
+        # content document is skipped block-by-block (all other block indices
+        # unchanged), and the generator's title/about spine documents are
+        # skipped as whole chapters when the book is detected as a ws-export.
+        ws = tmpdir / "wikisource.epub"
+        build_epub(
+            ws,
+            [
+                {
+                    "id": "title",
+                    "href": "title.xhtml",
+                    "content": _doc(
+                        "Sultana's Dream",
+                        "<h3>Rokeya Sakhawat Hossain</h3>"
+                        "<h6>Exported from Wikisource on January 1, 2026</h6>",
+                    ),
+                },
+                {
+                    "id": "c1",
+                    "href": "c1.xhtml",
+                    "content": _raw_doc(
+                        "<p>Before.</p>"
+                        '<div class="licenseContainer licenseBanner '
+                        'dynlayout-exempt">'
+                        "<div><p>This work is in the public domain in the "
+                        "United States.</p><p>More licence text.</p></div>"
+                        "<div><p>Yet more licence text.</p></div></div>"
+                        "<p>After.</p>"
+                    ),
+                },
+                {
+                    "id": "about",
+                    "href": "about.xhtml",
+                    "content": _doc("About", "<p>About this digital edition.</p>"),
+                },
+            ],
+            extra_metadata=[
+                '<dc:contributor id="meta-bkp">Wikisource</dc:contributor>'
+            ],
+        )
+        ws_default = {c.id: c for c in load_epub_chapters(ws)}
+        assert set(ws_default) == {"c1"}, sorted(ws_default)
+        assert [p.text for p in ws_default["c1"].paragraphs] == [
+            "Before.",
+            "After.",
+        ], ws_default["c1"].paragraphs
+        ws_full = {
+            c.id: c
+            for c in load_epub_chapters(ws, skip_wikisource_boilerplate=False)
+        }
+        # With the skip off, title, about and every banner paragraph return.
+        assert set(ws_full) == {"title", "c1", "about"}, sorted(ws_full)
+        assert any(
+            "public domain" in p.text for p in ws_full["c1"].paragraphs
+        ), ws_full["c1"].paragraphs
+        # Non-banner indices are unchanged: the default indices and texts are
+        # exactly the full load minus the banner's indices.
+        banner = {
+            p.index
+            for p in ws_full["c1"].paragraphs
+            if "licence" in p.text or "public domain" in p.text
+        }
+        assert len(banner) == 3, banner
+        assert {p.index: p.text for p in ws_default["c1"].paragraphs} == {
+            p.index: p.text
+            for p in ws_full["c1"].paragraphs
+            if p.index not in banner
+        }
+
+        # The same ws-export detection fires on a wikisource.org identifier
+        # with no Wikisource contributor.
+        ws_id = tmpdir / "wikisource-identifier.epub"
+        build_epub(
+            ws_id,
+            [
+                {
+                    "id": "title",
+                    "href": "title.xhtml",
+                    "content": _doc("T", "<p>T.</p>"),
+                },
+                {
+                    "id": "about",
+                    "href": "about.xhtml",
+                    "content": _doc("A", "<p>A.</p>"),
+                },
+                {"id": "c1", "href": "c1.xhtml", "content": _doc("C", "<p>C.</p>")},
+            ],
+            creator=None,
+            identifier="https://en.wikisource.org/wiki/X",
+        )
+        assert [c.id for c in load_epub_chapters(ws_id)] == ["c1"]
+
+        # A non-Wikisource book keeps chapters whose ids happen to be
+        # title/about, but still drops licenseContainer blocks (the class name
+        # is Wikisource-specific, so the rule is not gated on detection).
+        plain = tmpdir / "plain.epub"
+        build_epub(
+            plain,
+            [
+                {
+                    "id": "title",
+                    "href": "title.xhtml",
+                    "content": _doc("Title", "<p>T.</p>"),
+                },
+                {
+                    "id": "about",
+                    "href": "about.xhtml",
+                    "content": _doc("About", "<p>A.</p>"),
+                },
+                {
+                    "id": "c1",
+                    "href": "c1.xhtml",
+                    "content": _raw_doc(
+                        '<p>Kept.</p><div class="licenseContainer">'
+                        "<p>Banner.</p></div>"
+                    ),
+                },
+            ],
+            identifier="plain-001",
+        )
+        plain_chapters = {c.id: c for c in load_epub_chapters(plain)}
+        assert set(plain_chapters) == {"title", "about", "c1"}, sorted(
+            plain_chapters
+        )
+        assert [p.text for p in plain_chapters["c1"].paragraphs] == ["Kept."]
+
         # Chapter title fallbacks. The nav label beats a lower heading; an h1
         # always wins; a document with no nav entry falls back to its h3; and
         # the nav href may carry a URL-encoded path and a #fragment.

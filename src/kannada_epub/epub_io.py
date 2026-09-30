@@ -4,7 +4,7 @@ import warnings
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import lxml.etree as etree
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
@@ -42,6 +42,35 @@ BLOCK_TAGS = [
 # with this kind so downstream consumers can tell them apart.
 TABLE_CELL_TAGS = ("td", "th")
 
+# Publisher boilerplate wrappers. Each rule is ``(class_tokens, element_ids)``:
+# a block is boilerplate when it, or any ancestor, carries one of the class
+# tokens or has one of the ids. Applied per active publisher in
+# ``load_epub_chapters``; this replaces the old inline Gutenberg check without
+# changing its behaviour.
+_GUTENBERG_BOILERPLATE = (
+    frozenset({"pg-boilerplate"}),
+    frozenset({"pg-header", "pg-footer"}),
+)
+_WIKISOURCE_BOILERPLATE = (frozenset({"licenseContainer"}), frozenset())
+
+
+def _in_boilerplate(tag, rules: list[tuple[frozenset, frozenset]]) -> bool:
+    """True if ``tag`` or any ancestor matches one of the boilerplate ``rules``.
+
+    Each rule is ``(class_tokens, element_ids)``; a match is any of the class
+    tokens appearing on the element, or its id being in the id set. Walks from
+    the block itself up through its ancestors so a wrapper element counts.
+    """
+    current = tag
+    while current is not None:
+        classes = current.get("class") or []
+        current_id = current.get("id")
+        for class_tokens, element_ids in rules:
+            if class_tokens.intersection(classes) or current_id in element_ids:
+                return True
+        current = current.parent
+    return False
+
 
 def _paragraph_kind(tag) -> str:
     """Classify a kept block as a table cell or ordinary text.
@@ -78,6 +107,28 @@ def _read_opf(zf: zipfile.ZipFile) -> tuple[str, etree._Element]:
     except KeyError as exc:
         raise ValueError(f"package document {opf_path!r} is missing") from exc
     return opf_path, etree.fromstring(data, _XML_PARSER)
+
+
+def _is_wikisource_export(opf: etree._Element) -> bool:
+    """True if the package document identifies a Wikisource ``ws-export``.
+
+    Either a ``dc:contributor`` whose text is exactly ``Wikisource``, or a
+    ``dc:identifier``/``dc:source`` whose URL host is ``wikisource.org``
+    or a subdomain of it. Used to decide whether the ``title``/``about`` spine
+    documents are generator boilerplate rather than book content.
+    """
+    metadata = opf.find(f"{{{OPF_NS}}}metadata")
+    if metadata is None:
+        return False
+    for contributor in metadata.findall(f"{{{DC_NS}}}contributor"):
+        if (contributor.text or "").strip() == "Wikisource":
+            return True
+    for tag in ("identifier", "source"):
+        for element in metadata.findall(f"{{{DC_NS}}}{tag}"):
+            host = urlsplit((element.text or "").strip()).hostname or ""
+            if host == "wikisource.org" or host.endswith(".wikisource.org"):
+                return True
+    return False
 
 
 def _collapse(text: str) -> str:
@@ -244,14 +295,16 @@ def _chapter_title(soup: BeautifulSoup, nav_label: str | None) -> str | None:
 
 def _spine_documents(
     path: str | Path,
-) -> tuple[list[tuple[str, str, bytes]], dict[str, str]]:
+) -> tuple[list[tuple[str, str, bytes]], dict[str, str], bool]:
     """Read each linear XHTML spine document plus the book's TOC labels.
 
-    Returns ``(documents, nav_labels)`` where ``documents`` holds
-    ``(manifest id, zip path, content)`` in order and ``nav_labels`` maps a
-    document's zip path to its navigation label. Matches what the previous
-    EbookLib-based reader returned, so chapter ids and paragraph indices of
-    existing checkpoints stay valid:
+    Returns ``(documents, nav_labels, is_wikisource)`` where ``documents``
+    holds ``(manifest id, zip path, content)`` in order and ``nav_labels`` maps
+    a document's zip path to its navigation label. ``is_wikisource`` reports
+    whether the package document identifies a Wikisource ``ws-export`` (built
+    once from the still-open zip, so callers never reopen the OPF). Matches
+    what the previous EbookLib-based reader returned, so chapter ids and
+    paragraph indices of existing checkpoints stay valid:
 
     - spine items with ``linear="no"`` are skipped (nav/TOC aids, not content);
     - only ``application/xhtml+xml`` items are documents;
@@ -278,6 +331,7 @@ def _spine_documents(
             raise ValueError("package document has no spine")
         # Built once per book from the still-open zip, shared by all chapters.
         nav_labels = _navigation_labels(zf, opf, opf_dir, manifest)
+        is_wikisource = _is_wikisource_export(opf)
 
         documents: list[tuple[str, str, bytes]] = []
         seen: set[str] = set()
@@ -312,7 +366,7 @@ def _spine_documents(
                 path,
                 ", ".join(skipped_duplicates),
             )
-        return documents, nav_labels
+        return documents, nav_labels, is_wikisource
 
 
 def read_epub_metadata(path: str | Path) -> tuple[str | None, str | None]:
@@ -355,6 +409,7 @@ def load_epub_chapters(
     exclude_ids: list[str] | set[str] | None = None,
     *,
     skip_gutenberg_boilerplate: bool = True,
+    skip_wikisource_boilerplate: bool = True,
 ) -> list[Chapter]:
     """Extract reading-order chapters as plain paragraph text.
 
@@ -391,10 +446,30 @@ def load_epub_chapters(
     ``pg-boilerplate`` class token or ``pg-header``/``pg-footer`` IDs) are
     omitted while retaining their original block indices. Set
     ``skip_gutenberg_boilerplate=False`` to include them.
+
+    Wikisource ``ws-export`` EPUBs add their own boilerplate. By default
+    (``skip_wikisource_boilerplate=True``) blocks inside a ``licenseContainer``
+    element (the licence banner ws-export injects into a content document) are
+    omitted the same way, keeping every other block's index. When the package
+    document identifies a ws-export — a ``dc:contributor`` whose text is
+    exactly ``Wikisource``, or a ``dc:identifier``/``dc:source`` whose URL host
+    is ``wikisource.org`` or a subdomain — the spine documents with idrefs ``title``
+    and ``about`` are skipped as whole chapters, as if named in `exclude_ids`.
+    A book without those markers keeps chapters whose ids happen to be
+    ``title``/``about``. Set ``skip_wikisource_boilerplate=False`` to include
+    all of it.
     """
-    documents, nav_labels = _spine_documents(path)
+    documents, nav_labels, is_wikisource = _spine_documents(path)
     chapters: list[Chapter] = []
     excluded = set(exclude_ids or [])
+    if skip_wikisource_boilerplate and is_wikisource:
+        # Generator pages, not book content: only for detected ws-exports.
+        excluded.update({"title", "about"})
+    boilerplate_rules: list[tuple[frozenset, frozenset]] = []
+    if skip_gutenberg_boilerplate:
+        boilerplate_rules.append(_GUTENBERG_BOILERPLATE)
+    if skip_wikisource_boilerplate:
+        boilerplate_rules.append(_WIKISOURCE_BOILERPLATE)
 
     for idref, name, content in documents:
         if idref in excluded:
@@ -414,20 +489,8 @@ def load_epub_chapters(
             # keep enumerate() advancing so all other indices are unchanged.
             if tag.find(BLOCK_TAGS) is not None:
                 continue
-            if skip_gutenberg_boilerplate:
-                current = tag
-                in_boilerplate = False
-                while current is not None:
-                    classes = current.get("class") or []
-                    if (
-                        "pg-boilerplate" in classes
-                        or current.get("id") in {"pg-header", "pg-footer"}
-                    ):
-                        in_boilerplate = True
-                        break
-                    current = current.parent
-                if in_boilerplate:
-                    continue
+            if boilerplate_rules and _in_boilerplate(tag, boilerplate_rules):
+                continue
             text = " ".join(tag.get_text().split())
             if len(text) >= min_paragraph_chars:
                 paragraphs.append(Paragraph(i, text, _paragraph_kind(tag)))
