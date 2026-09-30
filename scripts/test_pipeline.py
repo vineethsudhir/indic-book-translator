@@ -7,6 +7,7 @@ and builds a cloud provider with the optional local ML stack blocked.
 Run: .venv/bin/python scripts/test_pipeline.py
 """
 
+import io
 import json
 import math
 import os
@@ -35,6 +36,7 @@ from kannada_epub.consistency_editor import (
     _parse_numbered_output,
 )
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
+from kannada_epub.epub_writer import find_gutenberg_cover
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
 from kannada_epub.providers.base import OutputTruncatedError
@@ -68,6 +70,25 @@ class FakeTranslationEngine(TranslationProvider):
         self.calls += 1
         self.batch_sizes.append(len(paragraphs))
         return [f"{self._prefix} {text[:10]}" for text in paragraphs]
+
+
+class RecordingCoverEngine(FakeTranslationEngine):
+    """Records every request; can return a wrong count for the cover text."""
+
+    def __init__(self, *, mismatch: bool = False):
+        super().__init__()
+        self.inputs: list[list[str]] = []
+        self.mismatch = mismatch
+
+    def translate_paragraphs(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        self.inputs.append(list(paragraphs))
+        if self.mismatch and paragraphs and paragraphs[0] == "Cover Test":
+            self.calls += 1
+            self.batch_sizes.append(len(paragraphs))
+            return ["ಒಂದೇ"]  # deliberately the wrong count
+        return super().translate_paragraphs(paragraphs, src_lang, tgt_lang)
 
 
 class FakeEditorProvider:
@@ -479,6 +500,103 @@ def _check_source_problems(tmp: Path) -> None:
     assert any(line.strip().startswith("- pic:") for line in lines), lines
 
 
+def _check_cover(tmp: Path) -> None:
+    """A generated Gutenberg cover is replaced and reported; mismatch is safe."""
+    from PIL import Image
+
+    chapter = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        "<head><title>One</title></head>"
+        "<body><h1>One</h1><p>Alpha.</p><p>Beta.</p><p>Gamma.</p></body></html>"
+    )
+    cover_name = "111_222-cover.png"
+    buffer = io.BytesIO()
+    Image.new("RGB", (1600, 2400), (10, 20, 30)).save(buffer, format="PNG")
+    cover_png = buffer.getvalue()
+
+    def build_fixture(path: Path) -> None:
+        build_epub(
+            path,
+            [
+                {"id": "ch1", "href": "ch1.xhtml", "content": chapter},
+                {
+                    "id": "cover-img",
+                    "href": cover_name,
+                    "zip_name": cover_name,
+                    "content": cover_png,
+                    "media_type": "image/png",
+                    "properties": "cover-image",
+                    "in_spine": False,
+                },
+            ],
+            title="The Project Gutenberg eBook of Cover Test | Project Gutenberg",
+            creator="Cover Author",
+        )
+
+    # --- successful replacement ------------------------------------------
+    source = tmp / "cover_success.epub"
+    build_fixture(source)
+    out_dir = tmp / "cover_success_out"
+    engine = RecordingCoverEngine()
+    components = PipelineComponents(
+        translation_engine=engine,
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(out_dir / "glossary.db"),
+    )
+    cfg = BookConfig(
+        epub_path=str(source),
+        output_dir=str(out_dir),
+        glossary_db=str(out_dir / "glossary.db"),
+        strip_gutenberg=True,
+    )
+    lines: list[str] = []
+    result = run_book(
+        cfg,
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=["ch1"], batch_size=3),
+        components=components,
+        progress=lines.append,
+    )
+    assert ["Cover Test", "Cover Author"] in engine.inputs, engine.inputs
+    assert any(
+        "Replaced Project Gutenberg's generated cover" in line for line in lines
+    ), lines
+    assert result.epub_path is not None and result.epub_path.exists()
+    assert find_gutenberg_cover(result.epub_path) is None
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["cover_replaced"] is True, manifest.get("cover_replaced")
+
+    # --- strict count mismatch: run finishes, nothing misaligned ----------
+    source_bad = tmp / "cover_mismatch.epub"
+    build_fixture(source_bad)
+    out_dir_bad = tmp / "cover_mismatch_out"
+    engine_bad = RecordingCoverEngine(mismatch=True)
+    components_bad = PipelineComponents(
+        translation_engine=engine_bad,
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(out_dir_bad / "glossary.db"),
+    )
+    cfg_bad = BookConfig(
+        epub_path=str(source_bad),
+        output_dir=str(out_dir_bad),
+        glossary_db=str(out_dir_bad / "glossary.db"),
+        strip_gutenberg=True,
+    )
+    lines_bad: list[str] = []
+    result_bad = run_book(
+        cfg_bad,
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=["ch1"], batch_size=3),
+        components=components_bad,
+        progress=lines_bad.append,
+    )
+    assert any("Cover title not translated:" in line for line in lines_bad), lines_bad
+    assert result_bad.epub_path is not None and result_bad.epub_path.exists()
+    manifest_bad = json.loads((out_dir_bad / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_bad["cover_replaced"] is True, manifest_bad.get("cover_replaced")
+
+
 def _check_editor_parser() -> None:
     """A paragraph whose EMOTION line the model dropped is kept, not "missing"."""
     raw = (
@@ -659,6 +777,8 @@ def main() -> None:
         _check_split_and_resume(tmp)
         # --- a defective source is reported but the run still completes -----
         _check_source_problems(tmp)
+        # --- a generated Gutenberg cover is replaced, not misaligned --------
+        _check_cover(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

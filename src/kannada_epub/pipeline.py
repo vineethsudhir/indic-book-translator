@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import posixpath
 import threading
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -27,10 +28,13 @@ from .audiobook_builder import build_audiobook
 from .book_translator import BookTranslator, TranslatedBatch
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
+from .cover import CoverText
 from .edition_check import edition_notes, edition_payload
 from .epub_check import check_source_epub
-from .epub_io import Chapter, load_epub_chapters
+from .epub_io import Chapter, load_epub_chapters, read_epub_metadata
 from .epub_writer import (
+    _clean_title_text,
+    find_gutenberg_cover,
     find_gutenberg_mentions,
     translations_from_batches,
     write_translated_epub,
@@ -374,6 +378,50 @@ def _check_edition(
     return edition_payload(notes)
 
 
+def _build_cover_text(
+    epub_path: Path,
+    components: PipelineComponents,
+    progress: Callable[[str], None],
+) -> CoverText:
+    """Translated title/author for a replacement cover.
+
+    Strict by design: a translation that does not return exactly one string
+    per input is treated as a failure (never padded or truncated), so the
+    title and author can never swap. On any failure the Kannada fields are
+    ``None`` and the writer falls back to an English cover.
+    """
+    raw_title, author_en = read_epub_metadata(epub_path)
+    title_en = raw_title or ""
+    title_en = _clean_title_text(title_en, "") or title_en
+    author_en = author_en or None
+
+    title_kn: str | None = None
+    author_kn: str | None = None
+    if title_en:
+        to_translate = [title_en] + ([author_en] if author_en else [])
+        try:
+            translated = components.translation_engine.translate_paragraphs(
+                to_translate, "eng_Latn", "kan_Knda"
+            )
+            if len(translated) != len(to_translate):
+                raise ValueError(
+                    f"returned {len(translated)} strings for {len(to_translate)} inputs"
+                )
+            title_kn = translated[0].strip() or None
+            if author_en:
+                author_kn = translated[1].strip() or None
+        except Exception as exc:  # noqa: BLE001 — never fail the book
+            progress(f"Cover title not translated: {exc}")
+            title_kn = None
+            author_kn = None
+    return CoverText(
+        title_kn=title_kn,
+        author_kn=author_kn,
+        title_en=title_en,
+        author_en=author_en,
+    )
+
+
 def run_book(
     cfg: BookConfig,
     *,
@@ -449,6 +497,7 @@ def run_book(
         "chapters": [],
         "skipped": [],
         "source_problems": source_problems,
+        "cover_replaced": None,
     }
     if edition is not None:
         manifest["edition"] = edition
@@ -550,19 +599,72 @@ def run_book(
                 flagged.setdefault(result.chapter, set()).add(result.paragraph_index)
         epub_name, _ = output_file_names(epub_path.stem, is_preview)
         epub_out_path = output_dir / epub_name
-        write_translated_epub(
-            epub_path,
-            translations,
-            epub_out_path,
-            flagged=flagged,
-            strip_gutenberg=cfg.strip_gutenberg,
-        )
+
+        cover_text: CoverText | None = None
+        source_cover: str | None = None
+        if cfg.strip_gutenberg:
+            try:
+                source_cover = find_gutenberg_cover(epub_path)
+            except Exception as exc:  # noqa: BLE001 — never fail the book
+                progress(f"Cover check skipped: {exc}")
+                source_cover = None
+            if source_cover is not None:
+                try:
+                    cover_text = _build_cover_text(epub_path, components, progress)
+                except Exception as exc:  # noqa: BLE001 — never fail the book
+                    progress(f"Cover title not translated: {exc}")
+                    cover_text = None
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            write_translated_epub(
+                epub_path,
+                translations,
+                epub_out_path,
+                flagged=flagged,
+                strip_gutenberg=cfg.strip_gutenberg,
+                cover_text=cover_text,
+            )
+
         if cfg.strip_gutenberg:
             remaining = find_gutenberg_mentions(epub_out_path)
             if remaining:
                 progress(
                     f"Warning: {len(remaining)} Project Gutenberg mention(s) remain; "
                     f"first found in {remaining[0][0]}"
+                )
+            if source_cover is not None:
+                cover_replaced: bool | None = None
+                cover_error: Exception | None = None
+                try:
+                    still_generated = find_gutenberg_cover(epub_out_path)
+                except Exception as exc:  # noqa: BLE001 — never fail the book
+                    still_generated = source_cover
+                    cover_error = exc
+                if still_generated is None:
+                    progress(
+                        "Replaced Project Gutenberg's generated cover with a "
+                        "Kannada cover"
+                    )
+                    cover_replaced = True
+                else:
+                    reason = str(cover_error) if cover_error is not None else next(
+                        (
+                            str(item.message)
+                            for item in caught
+                            if "cover" in str(item.message).lower()
+                        ),
+                        "cover rendering failed",
+                    )
+                    progress(
+                        "Warning: the cover is still Project Gutenberg's "
+                        f"generated cover ({reason})"
+                    )
+                    cover_replaced = False
+                manifest["cover_replaced"] = cover_replaced
+                (output_dir / "manifest.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
                 )
         progress(f"Wrote translated EPUB: {epub_out_path}")
 

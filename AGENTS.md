@@ -12,7 +12,7 @@ they don't: invariants that break silently, and how to work here.
   - Fast, offline, no models — run these after any change:
     `test_epub_check`, `test_edition_check`, `test_sentence_split`,
     `test_epub_io`,
-    `test_epub_writer`, `test_tables`,
+    `test_epub_writer`, `test_tables`, `test_cover`,
     `test_qa`, `test_providers`,
     `test_pipeline`, `test_app`, `test_tts_engine`, `test_queue`.
   - Need local models, Ollama or API keys — only run when asked:

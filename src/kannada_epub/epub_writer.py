@@ -26,6 +26,7 @@ import re
 import tempfile
 import time
 import uuid
+import warnings
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -33,6 +34,12 @@ from urllib.parse import unquote, urlsplit
 import lxml.etree as etree
 from bs4 import BeautifulSoup, NavigableString, Tag
 
+from .cover import (
+    CoverText,
+    is_gutenberg_generated_cover,
+    is_translator_generated_cover,
+    render_cover,
+)
 from .epub_io import BLOCK_TAGS, Chapter, find_opf_path
 
 _OPF_NS = "http://www.idpf.org/2007/opf"
@@ -550,6 +557,73 @@ def _manifest_paths(opf_root: etree._Element, opf_dir: str) -> dict[str, tuple[s
     return paths
 
 
+def _find_cover_item(
+    opf_root: etree._Element, opf_dir: str
+) -> tuple[str, str] | None:
+    """``(zip path, media type)`` of the OPF cover image, or ``None``.
+
+    The cover is the manifest item named by ``<meta name="cover" content="id">``
+    or, failing that, the one carrying ``properties="cover-image"``.
+    """
+    cover_id = None
+    metadata = opf_root.find(f"{{{_OPF_NS}}}metadata")
+    if metadata is not None:
+        for meta in metadata.findall(f"{{{_OPF_NS}}}meta"):
+            if (meta.get("name") or "").lower() == "cover" and meta.get("content"):
+                cover_id = meta.get("content")
+                break
+
+    items = {
+        item.get("id"): item
+        for item in opf_root.findall(f".//{{{_OPF_NS}}}manifest/{{{_OPF_NS}}}item")
+        if item.get("id")
+    }
+    cover_item = items.get(cover_id) if cover_id else None
+    if cover_item is None:
+        cover_item = next(
+            (
+                item
+                for item in items.values()
+                if "cover-image" in (item.get("properties") or "").split()
+            ),
+            None,
+        )
+    if cover_item is None:
+        return None
+
+    href = unquote(urlsplit(cover_item.get("href", "")).path)
+    path = posixpath.normpath(posixpath.join(opf_dir, href))
+    return path, cover_item.get("media-type", "")
+
+
+def find_gutenberg_cover(epub_path: str | Path) -> str | None:
+    """Zip path of a Gutenberg-generated cover still in an EPUB, else ``None``.
+
+    A cover we rendered ourselves (see :func:`kannada_epub.cover.render_cover`)
+    is not a Gutenberg cover even though it shares the name and size, so it is
+    excluded via its marker chunk.
+    """
+    with zipfile.ZipFile(epub_path) as zf:
+        opf_path = find_opf_path(zf)
+        try:
+            opf_root = etree.fromstring(zf.read(opf_path))
+        except (KeyError, etree.XMLSyntaxError):
+            return None
+        cover_item = _find_cover_item(opf_root, posixpath.dirname(opf_path))
+        if cover_item is None:
+            return None
+        path, media_type = cover_item
+        try:
+            data = zf.read(path)
+        except KeyError:
+            return None
+        if is_gutenberg_generated_cover(
+            path, media_type, data
+        ) and not is_translator_generated_cover(data):
+            return path
+    return None
+
+
 def find_gutenberg_mentions(epub_path: str | Path) -> list[tuple[str, str]]:
     """Return one ``(zip entry, snippet)`` for every Gutenberg text match."""
     eligible = (".xhtml", ".html", ".htm", ".opf", ".ncx")
@@ -618,6 +692,7 @@ def write_translated_epub(
     font_dir: str | Path | None = None,
     flagged: dict[str, set[int]] | None = None,
     strip_gutenberg: bool = False,
+    cover_text: CoverText | None = None,
 ) -> None:
     """Repackage ``source_epub`` with translated paragraphs replaced in place.
 
@@ -626,7 +701,11 @@ def write_translated_epub(
     values to mark with the ``qa-review-flag`` CSS class (QA flagged them for
     human review).
     ``strip_gutenberg`` removes Project Gutenberg boilerplate and metadata
-    references from the output while retaining fragment targets.
+    references from the output while retaining fragment targets. When it is
+    set and the source's cover is one Project Gutenberg generated, the cover
+    is replaced in place with a Kannada cover rendered from ``cover_text``
+    (falling back to the OPF's cleaned English title and creator). If
+    rendering fails, the original cover is kept and a warning is emitted.
     """
     source_epub = Path(source_epub)
     output_path = Path(output_path)
@@ -639,6 +718,9 @@ def write_translated_epub(
         if not path.exists():
             raise FileNotFoundError(f"font asset not found: {path}")
         font_bytes[filename] = path.read_bytes()
+
+    replaced_cover_path: str | None = None
+    replaced_cover_bytes: bytes | None = None
 
     with zipfile.ZipFile(source_epub, "r") as zin:
         infos = {info.filename: info for info in zin.infolist()}
@@ -687,6 +769,43 @@ def write_translated_epub(
             )
             book_title = _clean_title_text(book_title, "") or book_title
             replacement_uid = _strip_gutenberg_metadata(opf_root)
+
+            creator_element = opf_root.find(
+                f"{{{_OPF_NS}}}metadata/{{{_DC_NS}}}creator"
+            )
+            creator = (
+                "".join(creator_element.itertext()).strip()
+                if creator_element is not None
+                else ""
+            )
+            cover_item = _find_cover_item(opf_root, opf_dir)
+            if cover_item is not None:
+                cover_path, cover_media_type = cover_item
+                cover_data = source_data.get(cover_path)
+                if (
+                    cover_data is not None
+                    and is_gutenberg_generated_cover(
+                        cover_path, cover_media_type, cover_data
+                    )
+                    and not is_translator_generated_cover(cover_data)
+                ):
+                    try:
+                        text = cover_text or CoverText(
+                            title_kn=None,
+                            author_kn=None,
+                            title_en=book_title,
+                            author_en=creator or None,
+                        )
+                        replaced_cover_bytes = render_cover(text, font_dir)
+                        replaced_cover_path = cover_path
+                    except Exception as exc:  # noqa: BLE001 — never fail the book
+                        warnings.warn(
+                            f"Keeping the Project Gutenberg cover "
+                            f"{cover_path!r}: {exc}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
+
             for doc_path, media_type, properties in manifest_paths.values():
                 if doc_path not in source_data:
                     continue
@@ -759,6 +878,15 @@ def write_translated_epub(
                 out_info = zipfile.ZipInfo(filename=name, date_time=info.date_time)
                 out_info.compress_type = zipfile.ZIP_DEFLATED
                 out_info.external_attr = info.external_attr
+                if (
+                    name == replaced_cover_path
+                    and replaced_cover_bytes is not None
+                ):
+                    # Same zip path and media type; keep the source entry's
+                    # compression so the replacement is otherwise identical.
+                    out_info.compress_type = info.compress_type
+                    zout.writestr(out_info, replaced_cover_bytes)
+                    continue
                 zout.writestr(out_info, data if data is not None else source_data[name])
 
             for name, data in added_bytes.items():

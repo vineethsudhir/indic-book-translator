@@ -38,6 +38,7 @@ dependencies = [
     "soundfile>=0.12",
     "python-dotenv>=1.0",
     "platformdirs>=4",
+    "pillow>=10",
 ]
 
 [project.urls]

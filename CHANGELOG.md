@@ -10,6 +10,9 @@ All notable changes to this project are documented here. This changelog follows
 - An option to remove Project Gutenberg text, metadata, links and navigation
   entries from output EPUBs before sharing; the run log reports any Gutenberg
   mentions left.
+- Project Gutenberg's own generated covers are replaced with a Kannada
+  title/author cover when Gutenberg text is stripped; original scanned covers
+  are kept.
 - A "Using translations responsibly" section in the README and a rights and
   privacy notice on the app's Translate page.
 - Output EPUBs carry a `dc:contributor` entry marking them as unreviewed
