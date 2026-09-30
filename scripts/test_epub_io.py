@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from epub_fixture import build_epub
+from epub_fixture import build_epub, build_ncx
 
 from kannada_epub.epub_io import load_epub_chapters, read_epub_metadata
 
@@ -29,6 +29,30 @@ def _doc(heading: str, body: str) -> str:
         '<html xmlns="http://www.w3.org/1999/xhtml">'
         f"<head><title>Book title</title></head>"
         f"<body><h1>{heading}</h1>{body}</body></html>"
+    )
+
+
+def _raw_doc(inner: str) -> str:
+    """A body whose blocks are given verbatim (no implicit heading)."""
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        f"<head><title>Book title</title></head>"
+        f"<body>{inner}</body></html>"
+    )
+
+
+def _nav(entries: list[tuple[str, str]]) -> str:
+    """An EPUB 3 nav document with one ``<a>`` per ``(label, href)``."""
+    items = "".join(
+        f'<li><a href="{href}">{label}</a></li>' for label, href in entries
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml" '
+        'xmlns:epub="http://www.idpf.org/2007/ops">'
+        "<head><title>Contents</title></head>"
+        f'<body><nav epub:type="toc"><ol>{items}</ol></nav></body></html>'
     )
 
 
@@ -149,6 +173,79 @@ def main() -> None:
         assert restored["item14"].paragraphs[2].text == "License text."
         assert restored["item14"].paragraphs[4].text == "Footer license."
         assert restored["item14"].paragraphs[3].text == "Ordinary text."
+
+        # Chapter title fallbacks. The nav label beats a lower heading; an h1
+        # always wins; a document with no nav entry falls back to its h3; and
+        # the nav href may carry a URL-encoded path and a #fragment.
+        titles = tmpdir / "titles.epub"
+        build_epub(
+            titles,
+            [
+                {
+                    "id": "t1",
+                    "href": "t1.xhtml",
+                    "content": _raw_doc("<h3>Heading Three</h3><p>A.</p>"),
+                },
+                {
+                    "id": "t2",
+                    "href": "chapter%20two.xhtml",
+                    "zip_name": "chapter two.xhtml",
+                    "content": _raw_doc("<p>B.</p>"),
+                },
+                {
+                    "id": "t3",
+                    "href": "t3.xhtml",
+                    "content": _raw_doc("<h3>Heading Three Only</h3><p>C.</p>"),
+                },
+                {
+                    "id": "t4",
+                    "href": "t4.xhtml",
+                    "content": _raw_doc("<h1>Real H1</h1><p>D.</p>"),
+                },
+            ],
+            nav_content=_nav(
+                [
+                    ("Nav One", "t1.xhtml"),
+                    ("Nav Two", "chapter%20two.xhtml#sec-1"),
+                    ("Different", "t4.xhtml"),
+                ]
+            ),
+        )
+        title_map = {c.id: c.title for c in load_epub_chapters(titles)}
+        assert title_map == {
+            "t1": "Nav One",
+            "t2": "Nav Two",
+            "t3": "Heading Three Only",
+            "t4": "Real H1",
+        }, title_map
+
+        # An EPUB 2-style book has no nav: the NCX label is used.
+        ncx_book = tmpdir / "ncx.epub"
+        build_epub(
+            ncx_book,
+            [{"id": "n1", "href": "n1.xhtml", "content": _raw_doc("<p>Only.</p>")}],
+            include_nav=False,
+            ncx_content=build_ncx([("NCX Label", "n1.xhtml#part1")]),
+            version="2.0",
+        )
+        assert [c.title for c in load_epub_chapters(ncx_book)] == ["NCX Label"]
+
+        # Oversized titles are capped at 200 characters on a word boundary.
+        long_title = " ".join(["word"] * 60)
+        long_book = tmpdir / "long.epub"
+        build_epub(
+            long_book,
+            [
+                {
+                    "id": "l1",
+                    "href": "l1.xhtml",
+                    "content": _raw_doc(f"<h1>{long_title}</h1><p>x</p>"),
+                }
+            ],
+        )
+        truncated = load_epub_chapters(long_book)[0].title
+        assert len(truncated) <= 200, len(truncated)
+        assert truncated.split() == ["word"] * 40, truncated
 
         # Missing title/creator come back as None.
         bare = tmpdir / "bare.epub"

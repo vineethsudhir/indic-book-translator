@@ -17,6 +17,8 @@ OPF_NS = "http://www.idpf.org/2007/opf"
 DC_NS = "http://purl.org/dc/elements/1.1/"
 _CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
 _XHTML_MEDIA_TYPE = "application/xhtml+xml"
+_NCX_MEDIA_TYPE = "application/x-dtbncx+xml"
+_EPUB_OPS_NS = "http://www.idpf.org/2007/ops"
 
 # EPUBs are untrusted input: never expand entities or fetch DTDs.
 _XML_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
@@ -78,11 +80,178 @@ def _read_opf(zf: zipfile.ZipFile) -> tuple[str, etree._Element]:
     return opf_path, etree.fromstring(data, _XML_PARSER)
 
 
-def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
-    """``(manifest id, content)`` of each linear XHTML spine document, in order.
+def _collapse(text: str) -> str:
+    """Collapse every run of whitespace into a single space."""
+    return " ".join(text.split())
 
-    Matches what the previous EbookLib-based reader returned, so chapter ids
-    and paragraph indices of existing checkpoints stay valid:
+
+def _truncate_title(title: str) -> str:
+    """Cap a display title at 200 characters, preferring a word boundary."""
+    if len(title) <= 200:
+        return title
+    cut = title[:200]
+    boundary = cut.rfind(" ")
+    if boundary > 0:
+        cut = cut[:boundary]
+    return cut
+
+
+def _local_name(tag) -> str:
+    """Local tag name with any ``{namespace}`` prefix removed (``""`` if not a str)."""
+    if isinstance(tag, str):
+        return tag.rsplit("}", 1)[-1]
+    return ""
+
+
+def _resolve_zip_path(base_dir: str, href: str) -> str:
+    """Resolve a nav/NCX ``href`` against ``base_dir`` to a zip entry path.
+
+    Drops any ``#fragment``, URL-decodes and normalises, matching the way
+    ``_spine_documents`` computes spine document zip paths.
+    """
+    path = href.split("#", 1)[0]
+    return posixpath.normpath(posixpath.join(base_dir, unquote(path)))
+
+
+def _collect_nav_labels(
+    zf: zipfile.ZipFile, opf_dir: str, nav_item, labels: dict[str, str]
+) -> None:
+    """Add EPUB 3 nav TOC entries to ``labels`` (``{zip path: label}``)."""
+    nav_path = _resolve_zip_path(opf_dir, nav_item.get("href") or "")
+    try:
+        data = zf.read(nav_path)
+    except KeyError:
+        return
+    try:
+        root = etree.fromstring(data, _XML_PARSER)
+    except etree.XMLSyntaxError:
+        return
+    nav_dir = posixpath.dirname(nav_path)
+    for element in root.iter():
+        if _local_name(element.tag) != "nav":
+            continue
+        epub_type = (
+            element.get(f"{{{_EPUB_OPS_NS}}}type") or element.get("epub:type") or ""
+        )
+        if "toc" not in epub_type.split():
+            continue
+        for anchor in element.iter():
+            if _local_name(anchor.tag) != "a":
+                continue
+            label = _collapse("".join(anchor.itertext()))
+            href = anchor.get("href")
+            if label and href:
+                labels.setdefault(_resolve_zip_path(nav_dir, href), label)
+
+
+def _collect_ncx_labels(
+    zf: zipfile.ZipFile, opf_dir: str, ncx_item, labels: dict[str, str]
+) -> None:
+    """Add EPUB 2 NCX entries to ``labels`` (``{zip path: label}``)."""
+    ncx_path = _resolve_zip_path(opf_dir, ncx_item.get("href") or "")
+    try:
+        data = zf.read(ncx_path)
+    except KeyError:
+        return
+    try:
+        root = etree.fromstring(data, _XML_PARSER)
+    except etree.XMLSyntaxError:
+        return
+    ncx_dir = posixpath.dirname(ncx_path)
+
+    def child(element, name):
+        for candidate in element:
+            if _local_name(candidate.tag) == name:
+                return candidate
+        return None
+
+    for nav_point in root.iter():
+        if _local_name(nav_point.tag) != "navPoint":
+            continue
+        label_el = child(nav_point, "navLabel")
+        text_el = child(label_el, "text") if label_el is not None else None
+        content_el = child(nav_point, "content")
+        label = _collapse("".join(text_el.itertext())) if text_el is not None else ""
+        src = content_el.get("src") if content_el is not None else None
+        if label and src:
+            labels.setdefault(_resolve_zip_path(ncx_dir, src), label)
+
+
+def _navigation_labels(
+    zf: zipfile.ZipFile, opf: etree._Element, opf_dir: str, manifest: dict
+) -> dict[str, str]:
+    """``{zip path: label}`` for every TOC entry, built once per book.
+
+    Prefers the EPUB 3 navigation document (the manifest item whose
+    ``properties`` include ``nav``) when present; otherwise falls back to the
+    EPUB 2 NCX (the spine's ``toc`` item, else the first
+    ``application/x-dtbncx+xml`` item). The first label for a document wins.
+    """
+    labels: dict[str, str] = {}
+    nav_item = next(
+        (
+            item
+            for item in manifest.values()
+            if "nav" in (item.get("properties") or "").split()
+        ),
+        None,
+    )
+    if nav_item is not None:
+        _collect_nav_labels(zf, opf_dir, nav_item, labels)
+        return labels
+
+    spine = opf.find(f"{{{OPF_NS}}}spine")
+    ncx_item = None
+    if spine is not None and spine.get("toc"):
+        ncx_item = manifest.get(spine.get("toc"))
+    if ncx_item is None:
+        ncx_item = next(
+            (
+                item
+                for item in manifest.values()
+                if item.get("media-type") == _NCX_MEDIA_TYPE
+            ),
+            None,
+        )
+    if ncx_item is not None:
+        _collect_ncx_labels(zf, opf_dir, ncx_item, labels)
+    return labels
+
+
+def _chapter_title(soup: BeautifulSoup, nav_label: str | None) -> str | None:
+    """Best display title for a chapter.
+
+    Tries, in order: the first ``h1``/``h2``/``title`` inside the body (the
+    historical rule), the navigation label, then the first ``h3``-``h6``.
+    Empty/whitespace-only candidates are skipped; the result is truncated to
+    200 characters at a word boundary.
+    """
+    scope = soup.body or soup
+    heading = scope.find(["h1", "h2", "title"])
+    if heading is not None:
+        title = _collapse(heading.get_text(" ", strip=True))
+        if title:
+            return _truncate_title(title)
+    if nav_label:
+        return _truncate_title(nav_label)
+    lower = scope.find(["h3", "h4", "h5", "h6"])
+    if lower is not None:
+        title = _collapse(lower.get_text(" ", strip=True))
+        if title:
+            return _truncate_title(title)
+    return None
+
+
+def _spine_documents(
+    path: str | Path,
+) -> tuple[list[tuple[str, str, bytes]], dict[str, str]]:
+    """Read each linear XHTML spine document plus the book's TOC labels.
+
+    Returns ``(documents, nav_labels)`` where ``documents`` holds
+    ``(manifest id, zip path, content)`` in order and ``nav_labels`` maps a
+    document's zip path to its navigation label. Matches what the previous
+    EbookLib-based reader returned, so chapter ids and paragraph indices of
+    existing checkpoints stay valid:
 
     - spine items with ``linear="no"`` are skipped (nav/TOC aids, not content);
     - only ``application/xhtml+xml`` items are documents;
@@ -107,8 +276,10 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
         spine = opf.find(f"{{{OPF_NS}}}spine")
         if spine is None:
             raise ValueError("package document has no spine")
+        # Built once per book from the still-open zip, shared by all chapters.
+        nav_labels = _navigation_labels(zf, opf, opf_dir, manifest)
 
-        documents: list[tuple[str, bytes]] = []
+        documents: list[tuple[str, str, bytes]] = []
         seen: set[str] = set()
         skipped_duplicates: list[str] = []
         for itemref in spine.iterfind(f"{{{OPF_NS}}}itemref"):
@@ -130,7 +301,7 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
                 posixpath.join(opf_dir, unquote(item.get("href", "")))
             )
             try:
-                documents.append((idref, zf.read(name)))
+                documents.append((idref, name, zf.read(name)))
             except KeyError as exc:
                 raise ValueError(
                     f"spine item {idref!r} points to missing entry {name!r}"
@@ -141,7 +312,7 @@ def _spine_documents(path: str | Path) -> list[tuple[str, bytes]]:
                 path,
                 ", ".join(skipped_duplicates),
             )
-        return documents
+        return documents, nav_labels
 
 
 def read_epub_metadata(path: str | Path) -> tuple[str | None, str | None]:
@@ -202,6 +373,14 @@ def load_epub_chapters(
     emitted twice; ``enumerate`` still advances over the skipped tag, keeping
     the index of every other paragraph stable for the writer.
 
+    ``Chapter.title`` is display-only and is resolved in fallback order: the
+    first ``h1``/``h2``/``title`` inside the body (unchanged from before),
+    then the label of this document's entry in the book's table of contents
+    (the EPUB 3 nav, else the EPUB 2 NCX), then the first body ``h3``-``h6``,
+    otherwise ``None``. Candidates are whitespace-collapsed, must be
+    non-empty, and are truncated to 200 characters at a word boundary. Titles
+    never affect paragraph indices or checkpoint matching.
+
     Reading order comes from the spine (not manifest iteration order), since
     the spine is what the EPUB spec actually guarantees reflects intended
     reading order. Spine items marked non-linear (EPUB3 nav/TOC documents,
@@ -213,22 +392,20 @@ def load_epub_chapters(
     omitted while retaining their original block indices. Set
     ``skip_gutenberg_boilerplate=False`` to include them.
     """
+    documents, nav_labels = _spine_documents(path)
     chapters: list[Chapter] = []
     excluded = set(exclude_ids or [])
 
-    for idref, content in _spine_documents(path):
+    for idref, name, content in documents:
         if idref in excluded:
             continue
 
         soup = BeautifulSoup(content, "lxml")
-        # Title from the body only: the head's <title> is usually the book
-        # title, not the chapter's.
-        title_tag = (soup.body or soup).find(["h1", "h2", "title"])
-        title = (
-            " ".join(title_tag.get_text(" ", strip=True).split())
-            if title_tag
-            else None
-        )
+        # Titles are display-only: they never affect paragraph indices or
+        # checkpoint matching. Resolved in fallback order by _chapter_title:
+        # a body h1/h2/title first, then the book's TOC label for this
+        # document, then a body h3-h6.
+        title = _chapter_title(soup, nav_labels.get(name))
 
         paragraphs = []
         for i, tag in enumerate(soup.find_all(BLOCK_TAGS)):
