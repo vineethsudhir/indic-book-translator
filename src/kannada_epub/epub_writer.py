@@ -31,11 +31,16 @@ from pathlib import Path
 import lxml.etree as etree
 from bs4 import BeautifulSoup
 
-from .epub_io import BLOCK_TAGS, Chapter
+from .epub_io import BLOCK_TAGS, Chapter, find_opf_path
 
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
-_CONTAINER_NS = "urn:oasis:names:tc:opendocument:xmlns:container"
+
+# Marks every output as unreviewed machine translation, so a copy that gets
+# shared still says what it is.
+MACHINE_TRANSLATION_CONTRIBUTOR = (
+    "Unreviewed machine translation into Kannada (Indic Book Translator)"
+)
 
 # (filename, media-type) for the files added next to the OPF.
 _FONT_FILES = [
@@ -128,18 +133,6 @@ def translations_from_batches(
     return result
 
 
-def _find_opf_path(zf: zipfile.ZipFile) -> str:
-    try:
-        container = zf.read("META-INF/container.xml")
-    except KeyError as exc:
-        raise ValueError("source epub has no META-INF/container.xml") from exc
-    root = etree.fromstring(container)
-    rootfile = root.find(f".//{{{_CONTAINER_NS}}}rootfile")
-    if rootfile is None or not rootfile.get("full-path"):
-        raise ValueError("container.xml has no rootfile with a full-path")
-    return rootfile.get("full-path")
-
-
 def _manifest_items(opf_root: etree._Element) -> dict[str, dict[str, str]]:
     items: dict[str, dict[str, str]] = {}
     for item in opf_root.findall(f".//{{{_OPF_NS}}}manifest/{{{_OPF_NS}}}item"):
@@ -228,7 +221,8 @@ def _translate_document(
 def _update_opf(
     opf_bytes: bytes, added_items: list[tuple[str, str, str]], language: str = "kn"
 ) -> bytes:
-    """Add manifest entries and force the package language, keeping the rest."""
+    """Add manifest entries, force the package language and add the
+    machine-translation contributor, keeping the rest."""
     root = etree.fromstring(opf_bytes)
     manifest = root.find(f"{{{_OPF_NS}}}manifest")
     if manifest is None:
@@ -257,6 +251,11 @@ def _update_opf(
     else:
         lang = etree.SubElement(metadata, f"{{{_DC_NS}}}language")
         lang.text = language
+
+    contributors = metadata.findall(f"{{{_DC_NS}}}contributor")
+    if not any(c.text == MACHINE_TRANSLATION_CONTRIBUTOR for c in contributors):
+        contributor = etree.SubElement(metadata, f"{{{_DC_NS}}}contributor")
+        contributor.text = MACHINE_TRANSLATION_CONTRIBUTOR
 
     return etree.tostring(root, xml_declaration=True, encoding="utf-8", pretty_print=True)
 
@@ -291,7 +290,7 @@ def write_translated_epub(
     with zipfile.ZipFile(source_epub, "r") as zin:
         infos = {info.filename: info for info in zin.infolist()}
         source_data = {name: zin.read(name) for name in infos}
-        opf_path = _find_opf_path(zin)
+        opf_path = find_opf_path(zin)
 
         opf_dir = posixpath.dirname(opf_path)
         opf_root = etree.fromstring(source_data[opf_path])

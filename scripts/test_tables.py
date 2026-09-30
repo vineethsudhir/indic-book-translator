@@ -1,6 +1,6 @@
 """Smoke test for table-cell translation (PRD FR-3.2).
 
-Builds a small EPUB 3 fixture with `ebooklib` (heading, two paragraphs and a
+Builds a small EPUB 3 fixture (heading, two paragraphs and a
 table exercising caption/th/colspan/rowspan/align/empty-cell/nested-<p>),
 translates every paragraph with fake Kannada, rewrites the book and proves the
 cells round-trip in place with their structure and attributes intact. No model
@@ -18,7 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from bs4 import BeautifulSoup
-from ebooklib import epub
+from epub_fixture import build_epub
 
 from kannada_epub.epub_io import load_epub_chapters
 from kannada_epub.epub_writer import write_translated_epub
@@ -48,22 +48,11 @@ CHAPTER_XHTML = """<!DOCTYPE html>
 
 
 def _build_fixture(path: Path) -> None:
-    book = epub.EpubBook()
-    book.set_identifier("test-tables-001")
-    book.set_title("Tables Test")
-    book.set_language("en")
-    book.add_author("Tester")
-
-    chapter = epub.EpubHtml(
-        title="Chapter One", file_name="chap_01.xhtml", lang="en", uid=CHAPTER_ID
+    build_epub(
+        path,
+        [{"id": CHAPTER_ID, "href": "chap_01.xhtml", "content": CHAPTER_XHTML}],
+        title="Tables Test",
     )
-    chapter.content = CHAPTER_XHTML
-    book.add_item(chapter)
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    book.spine = ["nav", chapter]
-
-    epub.write_epub(str(path), book)
 
 
 def _read_doc(epub_path: Path, suffix: str) -> bytes:

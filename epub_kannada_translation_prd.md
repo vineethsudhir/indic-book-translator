@@ -197,7 +197,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 ## 5. Technical Stack Recommendations
 
 * **Programming Language:** Python 3.11+
-* **EPUB Parsing / DOM Manipulation:** `EbookLib`, `BeautifulSoup4`, `lxml`
+* **EPUB Parsing / DOM Manipulation:** `zipfile` (stdlib), `BeautifulSoup4`, `lxml` (EbookLib was dropped because it is AGPL-3.0)
 * **Local Translation Models:** `IndicTrans2` (AI4Bharat) via `ctranslate2` (+ `sentencepiece`, `IndicTransToolkit`, `huggingface_hub`, `torch`, `transformers`) — see `pyproject.toml`
 * **Named Entity Recognition / Masking:** heuristic regex/frequency (`glossary/extraction.py`) now; `spaCy` (`en_core_web_sm`) + custom regex remains the future option per FR-2
 * **Consistency Editing LLM:** Ollama (`gemma4:26b` default) / any OpenAI-compatible API / Anthropic native — via `providers/` abstraction; `pyyaml`, `pydantic`, `httpx`, `openai`, `anthropic` clients
@@ -236,7 +236,9 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 5. **Phase 5: Glossary TM + Consistency Editing (NEW — implemented).** SQLite store, CSV review loop, forced substitution, provider-abstracted LLM edit with paragraph-integrity guarantees, chapter-scoped rolling context (FR-6/FR-7).
 6. **Phase 6: Emotion Tagging + TTS Audiobook (NEW — implemented).** Fixed emotion set, chunked Parler-TTS synthesis, peak normalization, single-WAV assembly (FR-8/FR-9).
 7. **Phase 7: Proofing & Regression Harness (NEW — implemented).** EN/KN sample export, proof HTML/PDF, `test_*.py` scripts (FR-10).
-8. **Next:** Human quality audit of generated translations; broader EPUB/table and reader-app validation; full inline-markup preservation; and optional integration of EPUBCheck. spaCy NER remains a future glossary improvement.
+8. **EbookLib licensing — done.** EbookLib (AGPL-3.0) was replaced rather than relicensing the project: it was only used to read the spine, documents and title/author, which `epub_io.py` now does with `zipfile` + `lxml`. The new reader returns byte-identical chapters, paragraph indices, titles and metadata to the EbookLib one on the sample book and a set of Project Gutenberg EPUB2/EPUB3 books, so existing checkpoints stay valid (`scripts/test_epub_io.py` pins the spine rules).
+9. **Action item — Project Gutenberg boilerplate.** Detect Project Gutenberg header/license sections and keep them in English (or offer to strip them) instead of machine-translating them, so translated public-domain books can be shared in line with Gutenberg's license.
+10. **Next:** Human quality audit of generated translations; broader EPUB/table and reader-app validation; full inline-markup preservation; and optional integration of EPUBCheck. spaCy NER remains a future glossary improvement.
 
 ---
 

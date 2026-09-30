@@ -18,7 +18,11 @@ import lxml.etree as ET
 from bs4 import BeautifulSoup
 
 from kannada_epub.epub_io import load_epub_chapters
-from kannada_epub.epub_writer import translations_from_batches, write_translated_epub
+from kannada_epub.epub_writer import (
+    MACHINE_TRANSLATION_CONTRIBUTOR,
+    translations_from_batches,
+    write_translated_epub,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 EPUB = ROOT / "data" / "sherlock_holmes.epub"
@@ -150,6 +154,10 @@ def main() -> None:
             assert any(h.endswith("OFL.txt") for h in out_hrefs)
             languages = opf_out.findall(f".//{{{DC_NS}}}language")
             assert languages and all(lang.text == "kn" for lang in languages)
+            contributors = [
+                c.text for c in opf_out.findall(f".//{{{DC_NS}}}contributor")
+            ]
+            assert contributors.count(MACHINE_TRANSLATION_CONTRIBUTOR) == 1, contributors
 
             # Every modified XHTML document is well-formed XML.
             for name in modified:

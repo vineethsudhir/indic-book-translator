@@ -25,6 +25,7 @@ jobs:
       - name: Run fast offline tests
         run: |
           python scripts/test_sentence_split.py
+          python scripts/test_epub_io.py
           python scripts/test_epub_writer.py
           python scripts/test_tables.py
           python scripts/test_qa.py

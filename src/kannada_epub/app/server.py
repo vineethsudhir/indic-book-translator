@@ -16,13 +16,12 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import quote
 
-from ebooklib import epub
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from ..epub_io import load_epub_chapters
+from ..epub_io import load_epub_chapters, read_epub_metadata
 from ..pipeline import PipelineComponents, RunOptions, output_file_names
 from .paths import books_dir, outputs_dir
 from .runner import BookRun
@@ -77,12 +76,8 @@ def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], li
 
 
 def _metadata(path: Path) -> tuple[str, str]:
-    book = epub.read_epub(str(path), options={"ignore_ncx": True})
-    titles = book.get_metadata("DC", "title")
-    creators = book.get_metadata("DC", "creator")
-    title = str(titles[0][0]).strip() if titles and titles[0][0] else path.stem
-    author = str(creators[0][0]).strip() if creators and creators[0][0] else "Unknown author"
-    return title, author
+    title, author = read_epub_metadata(path)
+    return title or path.stem, author or "Unknown author"
 
 
 def _source_epub(folder: Path, manifest: dict) -> Path | None:

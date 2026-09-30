@@ -324,6 +324,12 @@ h3 {
 .preview-input.show {
   display: block;
 }
+.rights-note {
+  margin: 18px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 640px;
+}
 .provider-summary {
   margin: 18px 0 0;
   padding-top: 14px;

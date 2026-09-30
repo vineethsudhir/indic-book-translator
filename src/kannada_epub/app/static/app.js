@@ -239,6 +239,13 @@
           )}
         </div>
         <div id="run-panel">${renderRunPanel(run)}</div>
+        <p class="rights-note">
+          Translate only books you own or that are in the public domain where
+          you live. Translations are unreviewed machine output: don’t share or
+          sell translations of copyrighted books without the rights holder’s
+          permission. With a cloud provider, the book’s text is sent to that
+          provider.
+        </p>
       </div>
     </section>`;
 

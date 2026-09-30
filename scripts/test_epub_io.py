@@ -1,0 +1,147 @@
+"""Offline tests for the zipfile/lxml EPUB reader in `kannada_epub.epub_io`.
+
+Covers the spine rules the reader must keep (they match the EbookLib-based
+reader it replaced, so existing checkpoints stay valid): linear="no" and
+non-XHTML items are skipped, hrefs are URL-unquoted, the nav is skipped, a
+missing spine document raises, entities are not expanded, and metadata is
+read from the package document. No model or network needed.
+
+Run: .venv/bin/python scripts/test_epub_io.py
+"""
+
+import shutil
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from epub_fixture import build_epub
+
+from kannada_epub.epub_io import load_epub_chapters, read_epub_metadata
+
+
+def _doc(heading: str, body: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        f"<head><title>Book title</title></head>"
+        f"<body><h1>{heading}</h1>{body}</body></html>"
+    )
+
+
+def main() -> None:
+    tmpdir = Path(tempfile.mkdtemp())
+    try:
+        src = tmpdir / "book.epub"
+        build_epub(
+            src,
+            [
+                {"id": "c1", "href": "c1.xhtml", "content": _doc("One", "<p>Alpha.</p>")},
+                {
+                    "id": "aside",
+                    "href": "aside.xhtml",
+                    "content": _doc("Aside", "<p>Skipped.</p>"),
+                    "linear": "no",
+                },
+                {
+                    "id": "c2",
+                    "href": "chapter%20two.xhtml",
+                    "zip_name": "chapter two.xhtml",
+                    "content": _doc("Two", "<blockquote><p>Beta.</p></blockquote><p>Gamma.</p>"),
+                },
+                {
+                    "id": "style",
+                    "href": "style.css",
+                    "content": "p { margin: 0 }",
+                    "media_type": "text/css",
+                },
+                {
+                    "id": "unlisted",
+                    "href": "unlisted.xhtml",
+                    "content": _doc("Unlisted", "<p>Not in spine.</p>"),
+                    "in_spine": False,
+                },
+                {
+                    "id": "cover-page",
+                    "href": "cover.xhtml",
+                    "content": _doc("Cover", "<p>Cover text.</p>"),
+                    "properties": "cover",
+                },
+            ],
+            title="  The Title  ",
+            creator="An Author",
+        )
+
+        chapters = load_epub_chapters(src)
+        # Spine order; nav, non-linear, non-XHTML, unlisted and "cover"
+        # documents are all skipped.
+        assert [c.id for c in chapters] == ["c1", "c2"], [c.id for c in chapters]
+        # The chapter title comes from the body, not the head's <title>.
+        assert [c.title for c in chapters] == ["One", "Two"]
+        # An URL-quoted href resolves to the real zip entry; the blockquote
+        # wrapping a <p> is skipped but still advances the index.
+        c2 = chapters[1]
+        assert [(p.index, p.text) for p in c2.paragraphs] == [
+            (0, "Two"),
+            (2, "Beta."),
+            (3, "Gamma."),
+        ], c2.paragraphs
+        assert read_epub_metadata(src) == ("The Title", "An Author")
+        assert [c.id for c in load_epub_chapters(src, exclude_ids=["c1"])] == ["c2"]
+
+        # Missing title/creator come back as None.
+        bare = tmpdir / "bare.epub"
+        build_epub(
+            bare,
+            [{"id": "c1", "href": "c1.xhtml", "content": _doc("One", "<p>A.</p>")}],
+            title=None,
+            creator=None,
+            opf_dir="",
+        )
+        assert read_epub_metadata(bare) == (None, None)
+        assert [c.id for c in load_epub_chapters(bare)] == ["c1"]
+
+        # A spine document missing from the zip is an error, not a silent skip.
+        missing = tmpdir / "missing.epub"
+        build_epub(
+            missing,
+            [{"id": "c1", "href": "c1.xhtml", "content": "", "write": False}],
+        )
+        try:
+            load_epub_chapters(missing)
+        except ValueError as exc:
+            assert "missing entry" in str(exc), exc
+        else:
+            raise AssertionError("missing spine document did not raise")
+
+        # Entities in the package document are not expanded.
+        entity = tmpdir / "entity.epub"
+        build_epub(
+            entity,
+            [{"id": "c1", "href": "c1.xhtml", "content": _doc("One", "<p>A.</p>")}],
+            title="&xxe;",
+        )
+        with zipfile.ZipFile(entity) as zf:
+            entries = {n: zf.read(n) for n in zf.namelist()}
+        opf = entries["EPUB/content.opf"].decode().replace("&amp;xxe;", "&xxe;")
+        opf = opf.replace(
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE package [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>',
+        )
+        entries["EPUB/content.opf"] = opf.encode()
+        with zipfile.ZipFile(entity, "w") as zf:
+            for name, data in entries.items():
+                zf.writestr(name, data)
+        title, _ = read_epub_metadata(entity)
+        assert title is None or "root:" not in title, title
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print("test_epub_io: all assertions passed")
+
+
+if __name__ == "__main__":
+    main()

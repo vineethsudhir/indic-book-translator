@@ -33,3 +33,6 @@ config/consistency_editor.yaml
 .omc/
 .omo/
 .claude/
+
+# Personal to-do list
+ACTION_ITEMS.md

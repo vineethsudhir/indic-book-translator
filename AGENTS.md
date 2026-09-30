@@ -10,7 +10,8 @@ they don't: invariants that break silently, and how to work here.
 - Tests are plain scripts, not pytest: `.venv/bin/python scripts/test_<name>.py`
   (each prints `...: all assertions passed`).
   - Fast, offline, no models — run these after any change:
-    `test_sentence_split`, `test_epub_writer`, `test_tables`, `test_qa`,
+    `test_sentence_split`, `test_epub_io`, `test_epub_writer`, `test_tables`,
+    `test_qa`,
     `test_pipeline`, `test_app`, `test_tts_engine`.
   - Need local models, Ollama or API keys — only run when asked:
     `test_translation`, `test_tts`, `test_tts_voices`, `test_glossary`,
@@ -47,7 +48,8 @@ they don't: invariants that break silently, and how to work here.
   import blocker.
 - **Parler-TTS output is sampled.** Short prompts sometimes return shape
   `(1, 1)`: flatten with `reshape(-1)`, never `squeeze()`.
-- **EPUB writing edits the zip directly** (not ebooklib's writer): `mimetype`
+- **EPUB reading and writing use `zipfile` + `lxml` directly** (no EbookLib,
+  which is AGPL; don't add it back). Writing: `mimetype`
   first and stored, every untouched entry byte-identical, write to a temp file
   then rename.
 
