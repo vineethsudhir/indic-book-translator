@@ -31,6 +31,24 @@ _NUMBERED_CHAPTER_RE = re.compile(
 # A bare heading that is only a number or roman numeral, e.g. "IV" or "3.".
 _BARE_NUMBER_RE = re.compile(r"^(?:\d+|[ivxlcdm]+)\.?$", re.IGNORECASE)
 
+# A strictly valid roman numeral, so words made only of numeral letters
+# ("CIVIL", "DID") are not mistaken for one.
+_ROMAN_RE = r"M{0,4}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+# Paragraphs with nothing to translate: digits, punctuation and at most one
+# roman numeral ("7.", "II", "— 12 —", "XIV."). Models invent content for
+# these ("7." came back as "happened on the 7th"), so they skip the engine
+# and the editor and are copied verbatim.
+_NOTHING_TO_TRANSLATE_RE = re.compile(
+    rf"[\W\d_]*(?:(?:{_ROMAN_RE})|(?:{_ROMAN_RE.lower()}))?[\W\d_]*"
+)
+
+
+def needs_translation(text: str) -> bool:
+    """False for paragraphs that are only numbers, numerals or punctuation."""
+    stripped = text.strip()
+    return bool(stripped) and _NOTHING_TO_TRANSLATE_RE.fullmatch(stripped) is None
+
+
 # Errors after which re-running the editor on a smaller slice can succeed:
 # the model ran out of output tokens, the HTTP call timed out, or the reply
 # came back unusable (empty / wrong paragraph count). Unrelated RuntimeErrors
@@ -239,17 +257,38 @@ class BookTranslator:
                 batch = paragraphs[start : start + self._batch_size]
                 english_texts = [p.text for p in batch]
 
-                draft_kn = self._engine.translate_paragraphs(english_texts, "eng_Latn", "kan_Knda")
-
-                relevant_glossary = self._glossary.get_relevant_glossary(" ".join(english_texts))
-                edited_paragraphs = self._edit_with_split(
-                    english_texts=english_texts,
-                    draft_kn=draft_kn,
-                    glossary=relevant_glossary,
-                    incoming_context=rolling_context,
-                    chapter_id=chapter.id,
-                    span_start=start,
-                )
+                # Only paragraphs with words go to the engine and the editor;
+                # the rest are copied verbatim and merged back by position.
+                wanted = [i for i, text in enumerate(english_texts) if needs_translation(text)]
+                draft_kn = list(english_texts)
+                edited_paragraphs = [EditedParagraph(emotion="Narration", text=text) for text in english_texts]
+                if wanted:
+                    wanted_texts = [english_texts[i] for i in wanted]
+                    wanted_draft = self._engine.translate_paragraphs(wanted_texts, "eng_Latn", "kan_Knda")
+                    if len(wanted_draft) != len(wanted_texts):
+                        raise RuntimeError(
+                            f"Translation engine returned {len(wanted_draft)} paragraphs for "
+                            f"{len(wanted_texts)} (chapter {chapter.id!r}, paragraphs "
+                            f"[{start}:{start + len(batch)}]) — refusing to misalign."
+                        )
+                    relevant_glossary = self._glossary.get_relevant_glossary(" ".join(wanted_texts))
+                    wanted_edited = self._edit_with_split(
+                        english_texts=wanted_texts,
+                        draft_kn=wanted_draft,
+                        glossary=relevant_glossary,
+                        incoming_context=rolling_context,
+                        chapter_id=chapter.id,
+                        span_start=start,
+                    )
+                    if len(wanted_edited) != len(wanted_texts):
+                        raise RuntimeError(
+                            f"Consistency editor returned {len(wanted_edited)} paragraphs for "
+                            f"{len(wanted_texts)} (chapter {chapter.id!r}, paragraphs "
+                            f"[{start}:{start + len(batch)}]) — refusing to misalign."
+                        )
+                    for position, index in enumerate(wanted):
+                        draft_kn[index] = wanted_draft[position]
+                        edited_paragraphs[index] = wanted_edited[position]
 
                 if len(edited_paragraphs) != len(batch):
                     raise RuntimeError(

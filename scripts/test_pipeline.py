@@ -343,8 +343,15 @@ print("cloud-only-import-ok")
 
 
 def _load_chapter(chapter_id: str, n: int):
+    """The first ``n`` translatable paragraphs of a Sherlock chapter.
+
+    Number-only paragraphs ("I.") bypass the engine and editor (#27), so the
+    split-and-retry tests use only paragraphs that reach them.
+    """
+    from kannada_epub.book_translator import needs_translation
+
     chapter = next(c for c in load_epub_chapters(EPUB) if c.id == chapter_id)
-    chapter.paragraphs = chapter.paragraphs[:n]
+    chapter.paragraphs = [p for p in chapter.paragraphs if needs_translation(p.text)][:n]
     return chapter
 
 
@@ -976,11 +983,65 @@ def _check_chapter_context_pipeline(tmp: Path) -> None:
     )
 
 
+def _check_number_only_paragraphs(tmp: Path) -> None:
+    """Number-only paragraphs skip the engine and editor and stay verbatim (#27)."""
+    from kannada_epub.book_translator import needs_translation
+    from kannada_epub.epub_io import Chapter, Paragraph
+
+    for text in ("7.", "II", "XIV.", "— 12 —", "iv", "(12)", "..."):
+        assert not needs_translation(text), text
+    for text in ("CIVIL", "DID", "A.", "Chapter 1", "I went home.", "3rd"):
+        assert needs_translation(text), text
+
+    texts = ["1.", "The first poem.", "II", "The second poem.", "7."]
+    chapter = Chapter(
+        id="poems", title="Poems",
+        paragraphs=[Paragraph(i, text) for i, text in enumerate(texts)],
+    )
+
+    class RecordingEngine(FakeTranslationEngine):
+        def __init__(self):
+            super().__init__()
+            self.inputs: list[list[str]] = []
+
+        def translate_paragraphs(self, paragraphs, src_lang, tgt_lang):
+            self.inputs.append(list(paragraphs))
+            return super().translate_paragraphs(paragraphs, src_lang, tgt_lang)
+
+    engine = RecordingEngine()
+    translator = BookTranslator(
+        translation_engine=engine,
+        glossary_store=GlossaryStore(tmp / "numbers-glossary.db"),
+        consistency_editor=ConsistencyEditor(FakeEditorProvider()),
+        batch_size=10,
+    )
+    [batch] = translator.translate_chapters([chapter])
+    assert engine.inputs == [["The first poem.", "The second poem."]], engine.inputs
+    assert batch.paragraph_start == 0 and batch.paragraph_end == 5
+    assert batch.edited_kannada[0] == "1." and batch.edited_kannada[2] == "II"
+    assert batch.edited_kannada[4] == "7.", batch.edited_kannada
+    assert batch.edited_kannada[1] == "ಕನ್ನಡ The first", batch.edited_kannada
+    assert batch.edited_kannada[3] == "ಕನ್ನಡ The second", batch.edited_kannada
+    assert batch.draft_kannada[0] == "1." and batch.edited_emotions[0] == "Narration"
+
+    # A batch with nothing to translate never calls the engine or the editor.
+    only_numbers = Chapter(
+        id="numbers", title=None, paragraphs=[Paragraph(0, "3."), Paragraph(1, "IV")]
+    )
+    engine.inputs.clear()
+    [batch] = translator.translate_chapters([only_numbers])
+    assert engine.inputs == [] and batch.edited_kannada == ["3.", "IV"]
+
+
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}
     source_item4 = source[CHAPTER_ID]
+    # Number-only paragraphs ("I.") are copied verbatim, not translated (#27).
+    from kannada_epub.book_translator import needs_translation
+
     expected_kannada = [
-        f"ಕನ್ನಡ {p.text[:10]}" for p in source_item4.paragraphs[:N_PARAGRAPHS]
+        f"ಕನ್ನಡ {p.text[:10]}" if needs_translation(p.text) else p.text
+        for p in source_item4.paragraphs[:N_PARAGRAPHS]
     ]
     assert len(expected_kannada) == N_PARAGRAPHS
 
@@ -1144,6 +1205,11 @@ def main() -> None:
 
     _check_context_detection()
     _check_editor_parser()
+    _number_tmp = Path(tempfile.mkdtemp())
+    try:
+        _check_number_only_paragraphs(_number_tmp)
+    finally:
+        shutil.rmtree(_number_tmp, ignore_errors=True)
 
     # --- cloud-only import check (no local ML libs) ------------------------
     _check_cloud_only_import()
