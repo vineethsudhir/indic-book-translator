@@ -349,7 +349,9 @@ async def run_browser_checks(base_url: str, devtools_port: int, profile: str) ->
     )
     try:
         version_url = f"http://127.0.0.1:{devtools_port}/json/version"
-        for _ in range(100):
+        # A cold Chrome on a CI runner can take well over 10 s to open CDP.
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
             try:
                 with urllib.request.urlopen(version_url, timeout=1) as response:
                     version = json.load(response)
