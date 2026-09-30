@@ -10,6 +10,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,7 +25,8 @@ from pydantic import ValidationError
 from ..edition_check import edition_notes, edition_payload
 from ..epub_check import check_source_epub
 from ..epub_io import load_epub_chapters, read_epub_metadata
-from ..pipeline import PipelineComponents, RunOptions, output_file_names
+from ..pipeline import PipelineComponents, RunOptions, RunResult, output_file_names
+from .book_queue import BookQueue, ItemNotFound, ItemRunning, StateError
 from .paths import books_dir, outputs_dir
 from .runner import BookRun
 from .settings import (
@@ -80,6 +82,192 @@ def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], li
 def _metadata(path: Path) -> tuple[str, str]:
     title, author = read_epub_metadata(path)
     return title or path.stem, author or "Unknown author"
+
+
+def _safe_title(path: Path) -> str:
+    """A book's title for queue messages, falling back to its file name."""
+    try:
+        return _metadata(path)[0]
+    except Exception:  # noqa: BLE001 — an unreadable EPUB is failed at run time
+        return path.name
+
+
+class _RequirementsError(HTTPException):
+    """An API key or local library is missing; every queue item would fail."""
+
+
+def _book_source(book_id: str, *, status_code: int = 404) -> Path:
+    """Resolve a request's ``book_id`` to a real file directly in books_dir."""
+    filename = Path(book_id).name + ".epub"
+    source = books_dir() / filename
+    if (
+        not book_id
+        or book_id != Path(book_id).name
+        or "/" in book_id
+        or "\\" in book_id
+        or source.parent != books_dir()
+        or not source.is_file()
+    ):
+        raise HTTPException(status_code, "Uploaded book not found. Choose the EPUB again.")
+    return source
+
+
+def _validated_skip_ids(
+    source: Path, skip_chapters: object, settings: AppSettings
+) -> list[str]:
+    """Validate a run's skipped section ids exactly like ``/api/run``."""
+    if not isinstance(skip_chapters, list) or not all(
+        isinstance(item, str) for item in skip_chapters
+    ):
+        raise HTTPException(400, "Sections to skip must be a list of section ids.")
+    skip_ids = _dedupe(skip_chapters)
+    if skip_ids:
+        try:
+            available = load_epub_chapters(source, exclude_ids=settings.exclude_ids)
+        except Exception as exc:  # noqa: BLE001 — the EPUB was validated at upload
+            raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
+        available_ids = {chapter.id for chapter in available}
+        for skip_id in skip_ids:
+            if skip_id not in available_ids:
+                raise HTTPException(400, f"Unknown section: {skip_id[:100]}.")
+        if not available_ids - set(skip_ids):
+            raise HTTPException(400, "Choose at least one section.")
+    return skip_ids
+
+
+def _start_book(
+    app: FastAPI,
+    payload: object,
+    *,
+    on_finish: Callable[[RunResult | None, str | None], None] | None = None,
+    queue_item_id: str | None = None,
+) -> None:
+    """Validate and start one book on the runner.
+
+    Both ``/api/run`` and the queue go through here, so they share the book-id
+    check, option checks, ``skip_chapters`` validation, requirement checks, the
+    per-run settings copy and the run metadata. Raises ``HTTPException`` on any
+    problem.
+    """
+    runner: BookRun = app.state.runner
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Expected book and run options as a JSON object.")
+    book_id = str(payload.get("book_id", ""))
+    source = _book_source(book_id)
+    if runner.is_running():
+        raise HTTPException(409, "A translation is already running.")
+    settings = load_settings()
+    qa_enabled = payload.get("qa", settings.qa.enabled)
+    audiobook = payload.get("audiobook", False)
+    if not isinstance(qa_enabled, bool) or not isinstance(audiobook, bool):
+        raise HTTPException(400, "Quality check and audiobook options must be true or false.")
+    skip_ids = _validated_skip_ids(source, payload.get("skip_chapters", []), settings)
+    settings = settings.model_copy(update={
+        "qa": settings.qa.model_copy(update={"enabled": qa_enabled}),
+        "exclude_ids": _dedupe(settings.exclude_ids + skip_ids),
+    })
+    load_secrets_into_env()
+    missing_keys, missing_modules = _requirements(settings, audiobook)
+    if missing_keys or missing_modules:
+        messages = []
+        if missing_keys:
+            messages.append("Add these API keys in Settings: " + ", ".join(missing_keys) + ".")
+        if missing_modules:
+            messages.append(
+                "Install Local mode libraries in Settings: " + ", ".join(missing_modules) + "."
+            )
+        raise _RequirementsError(400, " ".join(messages))
+    preview = payload.get("preview_paragraphs")
+    try:
+        if preview in (None, ""):
+            preview = None
+        elif isinstance(preview, bool) or (isinstance(preview, float) and not preview.is_integer()):
+            raise ValueError
+        else:
+            preview = int(preview)
+        if preview is not None and preview < 1:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "Preview paragraphs must be a positive whole number.") from exc
+    options = RunOptions(
+        max_paragraphs=preview,
+        batch_size=settings.batch_size,
+        build_audiobook=audiobook,
+    )
+    app.state.run_meta = {
+        "book_id": book_id,
+        "filename": source.name,
+        "chapters": [],
+        "started": time.time(),
+        "skipped_chapters": skip_ids,
+        "queue_item_id": queue_item_id,
+    }
+    components_factory = app.state.components_factory
+    components = components_factory() if components_factory is not None else None
+    try:
+        runner.start(source, settings, options, components=components, on_finish=on_finish)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+def _queue_advance(app: FastAPI) -> None:
+    """Start the next pending item when the queue is active and idle."""
+    queue: BookQueue = app.state.queue
+    runner: BookRun = app.state.runner
+    with app.state.queue_advance_lock:
+        while queue.active and not runner.is_running():
+            item = queue.next_pending()
+            if item is None:
+                queue.set_active(False)
+                return
+            queue.mark_running(item.id)
+            payload = {
+                "book_id": item.book_id,
+                "qa": item.qa,
+                "audiobook": item.audiobook,
+                "skip_chapters": list(item.skip_chapters),
+            }
+            try:
+                _start_book(
+                    app,
+                    payload,
+                    on_finish=lambda result, error, item_id=item.id: _on_queue_item_finished(
+                        app, item_id, result, error
+                    ),
+                    queue_item_id=item.id,
+                )
+            except _RequirementsError as exc:
+                # Missing keys/libraries would fail every item: stop, don't spin.
+                queue.mark_failed(item.id, str(exc.detail))
+                queue.set_active(False)
+                return
+            except HTTPException as exc:
+                queue.mark_failed(item.id, str(exc.detail))
+                continue
+            except Exception as exc:  # noqa: BLE001 — a queue item must not crash the app
+                queue.mark_failed(item.id, f"{type(exc).__name__}: {exc}")
+                continue
+            return
+
+
+def _on_queue_item_finished(
+    app: FastAPI, item_id: str, result: RunResult | None, error: str | None
+) -> None:
+    """Record how a queue run ended, then hand off to the next book.
+
+    The outcome comes from the finished run itself, not from the runner, which
+    a new run may already have reset.
+    """
+    queue: BookQueue = app.state.queue
+    if error:
+        queue.mark_failed(item_id, error)
+    elif result is not None and result.cancelled:
+        queue.mark_cancelled(item_id)
+        # Stop was pressed: do not start the next book until Start queue.
+        queue.set_active(False)
+    else:
+        queue.mark_done(item_id)
+    _queue_advance(app)
 
 
 def _source_epub(folder: Path, manifest: dict) -> Path | None:
@@ -202,14 +390,18 @@ def create_app(
     app = FastAPI(title="Kannada Book Translator", docs_url=None, redoc_url=None)
     token = secrets.token_urlsafe(32)
     runner = BookRun()
+    queue = BookQueue()
     app.state.app_token = token
     app.state.runner = runner
+    app.state.queue = queue
+    app.state.queue_advance_lock = threading.Lock()
     app.state.run_meta = {
         "book_id": None,
         "filename": None,
         "chapters": [],
         "started": None,
         "skipped_chapters": [],
+        "queue_item_id": None,
     }
     app.state.components_factory = components_factory
 
@@ -360,85 +552,126 @@ def create_app(
     @app.post("/api/run", dependencies=[Depends(require_token)])
     async def start_run(request: Request):
         payload = await request.json()
+        _start_book(app, payload)
+        return _run_status(app)
+
+    @app.get("/api/books", dependencies=[Depends(require_token)])
+    async def list_books():
+        entries = []
+        for path in books_dir().iterdir():
+            if not path.is_file() or path.is_symlink() or path.suffix.lower() != ".epub":
+                continue
+            entry = {"book_id": path.stem, "filename": path.name}
+            try:
+                title, author = _metadata(path)
+                entry["title"] = title
+                entry["author"] = author
+            except Exception:  # noqa: BLE001 — list it, flag it, keep the page working
+                entry["title"] = path.name
+                entry["author"] = "Unknown author"
+                entry["unreadable"] = True
+            entries.append(entry)
+        entries.sort(key=lambda item: (item.get("title") or "").lower())
+        return entries
+
+    @app.get("/api/queue", dependencies=[Depends(require_token)])
+    async def get_queue():
+        return queue.snapshot()
+
+    @app.post("/api/queue", dependencies=[Depends(require_token)])
+    async def add_queue(request: Request):
+        payload = await request.json()
         if not isinstance(payload, dict):
-            raise HTTPException(400, "Expected book and run options as a JSON object.")
-        book_id = str(payload.get("book_id", ""))
-        filename = Path(book_id).name + ".epub"
-        source = books_dir() / filename
-        if (
-            not book_id or book_id != Path(book_id).name or "/" in book_id
-            or "\\" in book_id or source.parent != books_dir() or not source.is_file()
-        ):
-            raise HTTPException(404, "Uploaded book not found. Choose the EPUB again.")
-        if runner.is_running():
-            raise HTTPException(409, "A translation is already running.")
+            raise HTTPException(400, "Expected a list of books as a JSON object.")
+        items = payload.get("items")
+        if not isinstance(items, list) or not items:
+            raise HTTPException(400, "Choose at least one book.")
         settings = load_settings()
         qa_enabled = payload.get("qa", settings.qa.enabled)
         audiobook = payload.get("audiobook", False)
         if not isinstance(qa_enabled, bool) or not isinstance(audiobook, bool):
             raise HTTPException(400, "Quality check and audiobook options must be true or false.")
-        skip_chapters = payload.get("skip_chapters", [])
-        if not isinstance(skip_chapters, list) or not all(
-            isinstance(item, str) for item in skip_chapters
-        ):
-            raise HTTPException(400, "Sections to skip must be a list of section ids.")
-        skip_ids = _dedupe(skip_chapters)
-        if skip_ids:
-            try:
-                available = load_epub_chapters(source, exclude_ids=settings.exclude_ids)
-            except Exception as exc:  # noqa: BLE001 — the EPUB was validated at upload
-                raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
-            available_ids = {chapter.id for chapter in available}
-            for skip_id in skip_ids:
-                if skip_id not in available_ids:
-                    raise HTTPException(400, f"Unknown section: {skip_id[:100]}.")
-            if not available_ids - set(skip_ids):
-                raise HTTPException(400, "Choose at least one section.")
-        settings = settings.model_copy(update={
-            "qa": settings.qa.model_copy(update={"enabled": qa_enabled}),
-            "exclude_ids": _dedupe(settings.exclude_ids + skip_ids),
-        })
-        load_secrets_into_env()
-        missing_keys, missing_modules = _requirements(settings, audiobook)
-        if missing_keys or missing_modules:
-            messages = []
-            if missing_keys:
-                messages.append("Add these API keys in Settings: " + ", ".join(missing_keys) + ".")
-            if missing_modules:
-                messages.append(
-                    "Install Local mode libraries in Settings: " + ", ".join(missing_modules) + "."
-                )
-            raise HTTPException(400, " ".join(messages))
-        preview = payload.get("preview_paragraphs")
+        resolved = []
+        for entry in items:
+            if not isinstance(entry, dict):
+                raise HTTPException(400, "Each queued book needs a book id.")
+            source = _book_source(str(entry.get("book_id", "")), status_code=400)
+            skip_ids = _validated_skip_ids(
+                source, entry.get("skip_chapters", []), settings
+            )
+            resolved.append((source, skip_ids))
+        queued = queue.active_book_ids()
+        seen: set[str] = set()
+        for source, _skip_ids in resolved:
+            book_id = source.stem
+            if book_id in queued or book_id in seen:
+                raise HTTPException(400, f"{_safe_title(source)} is already in the queue.")
+            seen.add(book_id)
+        entries = [
+            {
+                "book_id": source.stem,
+                "filename": source.name,
+                "title": _safe_title(source),
+                "skip_chapters": skip_ids,
+                "qa": qa_enabled,
+                "audiobook": audiobook,
+            }
+            for source, skip_ids in resolved
+        ]
+        queue.add(entries)
+        return queue.snapshot()
+
+    @app.delete("/api/queue/{item_id}", dependencies=[Depends(require_token)])
+    async def remove_queue_item(item_id: str):
         try:
-            if preview in (None, ""):
-                preview = None
-            elif isinstance(preview, bool) or (isinstance(preview, float) and not preview.is_integer()):
-                raise ValueError
-            else:
-                preview = int(preview)
-            if preview is not None and preview < 1:
-                raise ValueError
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, "Preview paragraphs must be a positive whole number.") from exc
-        options = RunOptions(
-            max_paragraphs=preview,
-            batch_size=settings.batch_size,
-            build_audiobook=audiobook,
-        )
-        app.state.run_meta = {
-            "book_id": book_id,
-            "filename": filename,
-            "chapters": [],
-            "started": time.time(),
-            "skipped_chapters": skip_ids,
-        }
-        components = components_factory() if components_factory is not None else None
-        try:
-            runner.start(source, settings, options, components=components)
-        except RuntimeError as exc:
+            queue.remove(item_id)
+        except ItemNotFound as exc:
+            raise HTTPException(404, "Queue item not found.") from exc
+        except ItemRunning as exc:
             raise HTTPException(409, str(exc)) from exc
-        return _run_status(app)
+        return queue.snapshot()
+
+    @app.post("/api/queue/{item_id}/move", dependencies=[Depends(require_token)])
+    async def move_queue_item(item_id: str, request: Request):
+        payload = await request.json()
+        direction = payload.get("direction") if isinstance(payload, dict) else None
+        try:
+            queue.move(item_id, str(direction))
+        except ItemNotFound as exc:
+            raise HTTPException(404, "Queue item not found.") from exc
+        except StateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return queue.snapshot()
+
+    @app.post("/api/queue/start", dependencies=[Depends(require_token)])
+    async def start_queue():
+        if runner.is_running() and not app.state.run_meta.get("queue_item_id"):
+            raise HTTPException(409, "A translation is already running.")
+        if not queue.has_pending():
+            raise HTTPException(400, "The queue has no books waiting.")
+        queue.set_active(True)
+        _queue_advance(app)
+        return queue.snapshot()
+
+    @app.post("/api/queue/pause", dependencies=[Depends(require_token)])
+    async def pause_queue():
+        queue.set_active(False)
+        return queue.snapshot()
+
+    @app.post("/api/queue/clear", dependencies=[Depends(require_token)])
+    async def clear_queue():
+        queue.clear_finished()
+        return queue.snapshot()
+
+    @app.post("/api/queue/{item_id}/retry", dependencies=[Depends(require_token)])
+    async def retry_queue_item(item_id: str):
+        try:
+            queue.retry(item_id)
+        except ItemNotFound as exc:
+            raise HTTPException(404, "Queue item not found.") from exc
+        except StateError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return queue.snapshot()
 
     @app.post("/api/run/stop", dependencies=[Depends(require_token)])
     async def stop_run():
@@ -635,6 +868,7 @@ def _run_status(app: FastAPI) -> dict:
         "stage": stage,
         "narrating": narrating,
         "skipped_chapters": meta.get("skipped_chapters", []),
+        "queue_item_id": meta.get("queue_item_id"),
         "elapsed_seconds": max(0, int(time.time() - meta["started"])) if meta.get("started") else 0,
         "log_tail": runner.log_tail(200),
         "error": runner.error,

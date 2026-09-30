@@ -190,6 +190,7 @@ async def check_screen(devtools: DevTools, route: str, title: str, base_url: str
 async def check_sidebar_navigation(devtools: DevTools) -> None:
     destinations = [
         ("translate", "Bring a book to Kannada"),
+        ("queue", "Queue"),
         ("library", "Library"),
         ("settings", "Settings"),
     ]
@@ -297,6 +298,29 @@ async def upload_and_translate(devtools: DevTools) -> tuple[str, str]:
     assert "stays in English" in card_text, card_text
     devtools.assert_no_browser_errors("upload and translation")
     return await get_library_book(devtools)
+
+
+async def check_queue_page(devtools: DevTools, book_id: str) -> None:
+    """The Queue page lists the uploaded book; adding it shows it as Waiting."""
+    devtools.clear_events()
+    await devtools.evaluate("location.hash = '#/queue'")
+    await wait_for_heading(devtools, "Queue")
+    selector = f"[data-queue-book={json.dumps(book_id)}]"
+    await wait_for_value(
+        devtools,
+        f"document.querySelector({json.dumps(selector)}) ? 1 : 0",
+        lambda value: value == 1,
+    )
+    await devtools.evaluate(f"document.querySelector({json.dumps(selector)}).click()")
+    await devtools.evaluate("document.getElementById('queue-add').click()")
+    await wait_for_value(
+        devtools,
+        "document.querySelector('#queue-list .queue-state')?.innerText || ''",
+        lambda value: "Waiting" in value,
+        timeout=120,
+    )
+    await asyncio.sleep(0.2)
+    devtools.assert_no_browser_errors("queue page")
 
 
 async def get_library_book(devtools: DevTools) -> tuple[str, str]:
@@ -425,6 +449,7 @@ async def run_browser_checks(base_url: str, devtools_port: int, profile: str) ->
 
             expected = [
                 ("#/translate", "Bring a book to Kannada"),
+                ("#/queue", "Queue"),
                 ("#/library", "Library"),
                 ("#/settings", "Settings"),
             ]
@@ -442,6 +467,7 @@ async def run_browser_checks(base_url: str, devtools_port: int, profile: str) ->
                 features=[{"name": "prefers-color-scheme", "value": "light"}],
             )
             book_id, first_chapter = await upload_and_translate(devtools)
+            await check_queue_page(devtools, book_id)
             await check_reader(devtools, book_id, first_chapter)
 
             favicon_status = await devtools.evaluate(

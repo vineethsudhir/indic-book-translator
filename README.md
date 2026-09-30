@@ -66,7 +66,14 @@ Saved keys are stored in your user data folder and are not shown again.
 chapter (two by default). When it finishes, use **Open in Books app**, **Show in
 folder**, or the download links.
 
-**5. Read and review.** **Library** lists completed books. Open a book and
+**5. Queue several books.** On **Queue**, upload one or more EPUBs, tick the
+books to translate, and press **Add selected to queue**. **Start queue** then
+translates them one after another; pause lets the current book finish, and
+**Stop current book** cancels it. The queue is kept when you close the app and
+returns paused, so press **Start queue** again to continue. The Translate screen
+also has an **Add to queue** button for the current book.
+
+**6. Read and review.** **Library** lists completed books. Open a book and
 chapter to see each English paragraph above its Kannada translation. **Only
 show paragraphs to review** filters to paragraphs marked for retry or review
 when QA is enabled.

@@ -10,6 +10,8 @@
     state: null,
     book: null,
     run: null,
+    queue: null,
+    books: [],
     sectionSelections: null,
     stopConfirm: false,
     poll: null,
@@ -91,6 +93,9 @@
     if (route === "/translate") {
       setActiveNavigation("translate");
       await renderTranslate();
+    } else if (route === "/queue") {
+      setActiveNavigation("queue");
+      await renderQueue();
     } else if (route === "/library") {
       setActiveNavigation("library");
       await renderLibrary();
@@ -408,6 +413,7 @@
             "primary",
             "id=start-run disabled",
           )}
+          ${button("Add to queue", "", "id=add-queue")}
         </div>
         <div id="run-panel">${renderRunPanel(run)}</div>
         <p class="rights-note">
@@ -548,6 +554,44 @@
           Open Settings (${settingsLabel})
         </a>
       </div>`;
+  }
+
+  async function addCurrentToQueue() {
+    if (!appState.book) {
+      document.getElementById("precheck").innerHTML = inlineMessage(
+        "Choose an EPUB before adding it to the queue.",
+        true,
+      );
+      return;
+    }
+    if (!hasSelectedSections()) {
+      document.getElementById("precheck").innerHTML = inlineMessage(
+        "Choose at least one section.",
+        true,
+      );
+      return;
+    }
+    const skipChapters = [...document.querySelectorAll("[data-section-id]")]
+      .filter(box => !box.checked)
+      .map(box => box.dataset.sectionId);
+    const request = {
+      items: [{
+        book_id: appState.book.book_id,
+        skip_chapters: skipChapters,
+      }],
+      qa: document.getElementById("qa-option").checked,
+      audiobook: document.getElementById("audio-option").checked,
+    };
+    try {
+      await api("/api/queue", { method: "POST", body: json(request) });
+      document.getElementById("precheck").innerHTML = `
+        <div class="inline-message" role="status">
+          Added to the queue.
+          <a href="#/queue">View queue</a>
+        </div>`;
+    } catch (error) {
+      document.getElementById("precheck").innerHTML = inlineMessage(error.message, true);
+    }
   }
 
   async function pollRun() {
@@ -724,6 +768,7 @@
     }
     startButton.addEventListener("click", startRun);
     connectRunPanelButtons(run);
+    document.getElementById("add-queue")?.addEventListener("click", addCurrentToQueue);
   }
 
   function connectRunPanelButtons(run) {
@@ -762,6 +807,297 @@
       });
     } catch (error) {
       document.getElementById("precheck").innerHTML = inlineMessage(error.message, true);
+    }
+  }
+
+  // Queue screen
+  function queueStateLabel(item, run) {
+    if (item.state === "pending") return "Waiting";
+    if (item.state === "running") {
+      if (run && run.state === "running" && run.queue_item_id === item.id) {
+        const progress = run.chapter_total
+          ? ` — chapter ${run.chapter_index} of ${run.chapter_total}`
+          : "";
+        return `Translating…${progress}`;
+      }
+      return "Translating…";
+    }
+    if (item.state === "done") return "Done";
+    if (item.state === "failed") return `Failed: ${item.error || "Unknown error"}`;
+    if (item.state === "cancelled") return "Stopped";
+    return item.state;
+  }
+
+  function queueItemMarkup(item, run, index, total) {
+    const running = item.state === "running";
+    const canRetry = item.state === "failed" || item.state === "cancelled";
+    const title = escapeHtml(item.title || item.book_id);
+    const itemId = escapeHtml(item.id);
+    const buttons = [];
+    if (!running) {
+      buttons.push(`<button class="button quiet" data-queue-action="up" ` +
+        `data-item-id="${itemId}" aria-label="Move ${title} up" ` +
+        `${index === 0 ? "disabled" : ""}>Up</button>`);
+      buttons.push(`<button class="button quiet" data-queue-action="down" ` +
+        `data-item-id="${itemId}" aria-label="Move ${title} down" ` +
+        `${index === total - 1 ? "disabled" : ""}>Down</button>`);
+      buttons.push(`<button class="button quiet danger" data-queue-action="remove" ` +
+        `data-item-id="${itemId}" aria-label="Remove ${title}">Remove</button>`);
+    }
+    if (canRetry) {
+      buttons.push(`<button class="button quiet" data-queue-action="retry" ` +
+        `data-item-id="${itemId}" aria-label="Retry ${title}">Retry</button>`);
+    }
+    const library = item.state === "done"
+      ? `<a href="#/library/${encodeURIComponent(item.book_id)}">Read in Library</a>`
+      : "";
+    return `<article class="card queue-row">
+      <div class="book-info">
+        <h3>${title}</h3>
+        <p class="queue-state ${escapeHtml(item.state)}">${
+          escapeHtml(queueStateLabel(item, run))
+        }</p>
+        ${library}
+      </div>
+      <div class="actions queue-row-actions">${buttons.join("")}</div>
+    </article>`;
+  }
+
+  function queueListMarkup(queue, run) {
+    const items = queue.items || [];
+    if (!items.length) {
+      return `<div class="card empty"><p>The queue is empty. Add books above.</p></div>`;
+    }
+    return items.map((item, index) =>
+      queueItemMarkup(item, run, index, items.length)).join("");
+  }
+
+  function queueControlsMarkup(queue, run) {
+    const running = run && run.state === "running";
+    const startButton = queue.active
+      ? button("Pause queue", "", "data-queue-control=pause")
+      : button("Start queue", "primary", "data-queue-control=start");
+    return `<div class="actions">
+        ${startButton}
+        <button class="button quiet danger" data-queue-control="stop"
+          aria-label="Stop the book that is translating" ${
+            running ? "" : "disabled"
+          }>Stop current book</button>
+        <button class="button quiet" data-queue-control="clear">Clear finished</button>
+      </div>
+      <p class="muted">${queue.active
+        ? "The queue is running. Pausing lets the current book finish; no new " +
+          "book starts until you press Start queue."
+        : "The queue is paused. Press Start queue to begin the waiting books."}</p>`;
+  }
+
+  function queueBooksMarkup(books) {
+    if (!books.length) {
+      return `<p class="muted">No uploaded books yet. Upload an EPUB above.</p>`;
+    }
+    const rows = books.map(book => `<label class="section-row">
+      <input type="checkbox" data-queue-book="${escapeHtml(book.book_id)}"
+        aria-label="Queue ${escapeHtml(book.title)}">
+      <span class="section-title">${escapeHtml(book.title)}${
+        book.author ? ` — ${escapeHtml(book.author)}` : ""
+      }</span>
+      ${book.unreadable ? `<span class="section-count">Unreadable</span>` : ""}
+    </label>`).join("");
+    return `<div class="sections-list">${rows}</div>`;
+  }
+
+  async function renderQueue() {
+    const [queue, run] = await Promise.all([api("/api/queue"), api("/api/run")]);
+    appState.queue = queue;
+    appState.run = run;
+    content.innerHTML = `${pageHeader(
+      "One after another",
+      "Queue",
+      "Add several books and translate them in order. The queue is kept when " +
+        "the app is closed and starts again paused.",
+    )}
+    <section class="card section-gap">
+      <h2>Add books</h2>
+      <p class="muted">Upload one or more EPUB files, then tick the books to
+        queue.</p>
+      <div class="actions">
+        ${button("Choose EPUBs…", "", "id=queue-choose")}
+        <input class="sr-only" id="queue-file" type="file"
+          accept=".epub,application/epub+zip" multiple
+          aria-label="Choose EPUB files to upload">
+      </div>
+      <div id="queue-upload-result"></div>
+      <div id="queue-books">${queueBooksMarkup(appState.books || [])}</div>
+      <label class="toggle-row section-gap">
+        <input class="switch" type="checkbox" id="queue-audiobook">
+        <span class="toggle-copy">
+          <strong>Also make audiobooks</strong>
+          <small>Narrate each queued book after it is translated.</small>
+        </span>
+      </label>
+      <div class="actions section-gap">
+        ${button("Add selected to queue", "primary", "id=queue-add")}
+        <span id="queue-add-note" class="saved" aria-live="polite"></span>
+      </div>
+    </section>
+    <section class="section-gap">
+      <h2>Queue</h2>
+      <div id="queue-controls">${queueControlsMarkup(queue, run)}</div>
+      <div id="queue-list" class="book-list section-gap">${
+        queueListMarkup(queue, run)
+      }</div>
+    </section>
+    <p class="rights-note">The queue is kept when the app is closed. It always
+      starts paused after reopening; press Start queue to continue where each
+      book stopped.</p>`;
+    connectQueuePage();
+    await loadQueueBooks();
+    startQueuePollingIfNeeded(queue, run);
+  }
+
+  async function loadQueueBooks() {
+    const container = document.getElementById("queue-books");
+    try {
+      appState.books = await api("/api/books");
+      if (container) container.innerHTML = queueBooksMarkup(appState.books);
+    } catch (error) {
+      if (container) container.innerHTML = inlineMessage(error.message, true);
+    }
+  }
+
+  function connectQueuePage() {
+    const input = document.getElementById("queue-file");
+    document.getElementById("queue-choose")?.addEventListener("click", () => input.click());
+    input?.addEventListener("change", () => {
+      if (input.files.length) uploadQueueBooks([...input.files]);
+    });
+    document.getElementById("queue-add")?.addEventListener("click", addSelectedToQueue);
+    document.getElementById("queue-controls").addEventListener("click", event => {
+      const control = event.target.closest("[data-queue-control]");
+      if (control) queueControl(control.dataset.queueControl);
+    });
+    document.getElementById("queue-list").addEventListener("click", event => {
+      const action = event.target.closest("[data-queue-action]");
+      if (action) queueItemAction(action.dataset.queueAction, action.dataset.itemId);
+    });
+  }
+
+  async function uploadQueueBooks(files) {
+    const result = document.getElementById("queue-upload-result");
+    const messages = [];
+    result.innerHTML = inlineMessage(`Uploading ${files.length} file(s)…`);
+    for (const file of files) {
+      if (!file.name.toLowerCase().endsWith(".epub")) {
+        messages.push(inlineMessage(`${file.name}: choose an EPUB file ending in .epub.`, true));
+        continue;
+      }
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const uploaded = await api("/api/books", { method: "POST", body });
+        messages.push(inlineMessage(`${uploaded.title} uploaded.`));
+      } catch (error) {
+        messages.push(inlineMessage(`${file.name}: ${error.message}`, true));
+      }
+    }
+    result.innerHTML = messages.join("");
+    await loadQueueBooks();
+  }
+
+  async function addSelectedToQueue() {
+    const note = document.getElementById("queue-add-note");
+    const bookIds = [...document.querySelectorAll("[data-queue-book]:checked")]
+      .map(box => box.dataset.queueBook);
+    if (!bookIds.length) {
+      note.textContent = "Tick at least one book.";
+      return;
+    }
+    const audiobook = document.getElementById("queue-audiobook").checked;
+    try {
+      await api("/api/queue", {
+        method: "POST",
+        body: json({ items: bookIds.map(book_id => ({ book_id })), audiobook }),
+      });
+      note.textContent = "Added to the queue.";
+      await refreshQueueView();
+    } catch (error) {
+      note.textContent = error.message;
+    }
+  }
+
+  async function queueControl(action) {
+    const note = document.getElementById("queue-add-note");
+    const endpoints = {
+      start: "/api/queue/start",
+      pause: "/api/queue/pause",
+      stop: "/api/run/stop",
+      clear: "/api/queue/clear",
+    };
+    if (!endpoints[action]) return;
+    try {
+      await api(endpoints[action], { method: "POST" });
+      await refreshQueueView();
+    } catch (error) {
+      if (note) note.textContent = error.message;
+    }
+  }
+
+  async function queueItemAction(action, itemId) {
+    const note = document.getElementById("queue-add-note");
+    const encoded = encodeURIComponent(itemId);
+    try {
+      if (action === "up" || action === "down") {
+        await api(`/api/queue/${encoded}/move`, {
+          method: "POST",
+          body: json({ direction: action }),
+        });
+      } else if (action === "remove") {
+        await api(`/api/queue/${encoded}`, { method: "DELETE" });
+      } else if (action === "retry") {
+        await api(`/api/queue/${encoded}/retry`, { method: "POST" });
+      } else {
+        return;
+      }
+      await refreshQueueView();
+    } catch (error) {
+      if (note) note.textContent = error.message;
+    }
+  }
+
+  async function refreshQueueView() {
+    const [queue, run] = await Promise.all([api("/api/queue"), api("/api/run")]);
+    appState.queue = queue;
+    appState.run = run;
+    const controls = document.getElementById("queue-controls");
+    if (controls) controls.innerHTML = queueControlsMarkup(queue, run);
+    const list = document.getElementById("queue-list");
+    if (list) list.innerHTML = queueListMarkup(queue, run);
+    startQueuePollingIfNeeded(queue, run);
+  }
+
+  function startQueuePollingIfNeeded(queue, run) {
+    const shouldPoll = queue.active || (run && run.state === "running");
+    if (shouldPoll && !appState.poll) {
+      appState.poll = setInterval(pollQueue, 1200);
+    } else if (!shouldPoll && appState.poll) {
+      clearInterval(appState.poll);
+      appState.poll = null;
+    }
+  }
+
+  async function pollQueue() {
+    if (routeFromHash() !== "/queue") {
+      clearInterval(appState.poll);
+      appState.poll = null;
+      return;
+    }
+    try {
+      await refreshQueueView();
+    } catch (error) {
+      clearInterval(appState.poll);
+      appState.poll = null;
+      const list = document.getElementById("queue-list");
+      if (list) list.innerHTML = inlineMessage(error.message, true);
     }
   }
 

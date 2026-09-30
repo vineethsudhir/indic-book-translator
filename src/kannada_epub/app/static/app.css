@@ -598,6 +598,39 @@ label.field-label {
 .library-row .actions {
   flex: none;
 }
+.queue-row {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+.queue-row .book-info {
+  flex: 1;
+  min-width: 0;
+}
+.queue-row .book-info h3 {
+  overflow-wrap: anywhere;
+}
+.queue-state {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.queue-state.running,
+.queue-state.done {
+  color: var(--accent);
+}
+.queue-state.cancelled {
+  color: var(--warning);
+}
+.queue-state.failed {
+  color: var(--danger);
+}
+.queue-row-actions {
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .chapter-list {
   display: grid;
   gap: 5px;
@@ -865,6 +898,13 @@ label.field-label {
   }
   .library-row .actions {
     flex-direction: column;
+  }
+  .queue-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .queue-row-actions {
+    justify-content: flex-start;
   }
   .step {
     padding-left: 38px;

@@ -8,12 +8,16 @@ otherwise the pipeline builds the configured engines.
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 from pathlib import Path
+from typing import Callable
 
 from ..pipeline import PipelineComponents, RunOptions, RunResult, run_book
 from .settings import AppSettings, book_config_for
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_path(path_str: str) -> Path:
@@ -27,6 +31,8 @@ class BookRun:
 
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
+        self._running = False
+        self._on_finish: Callable[[RunResult | None, str | None], None] | None = None
         self._cancel = threading.Event()
         self._queue: queue.Queue[str] = queue.Queue()
         self._events: list[dict] = []
@@ -42,30 +48,45 @@ class BookRun:
         settings: AppSettings,
         options: RunOptions,
         components: PipelineComponents | None = None,
+        on_finish: Callable[[RunResult | None, str | None], None] | None = None,
     ) -> None:
-        """Start a run. Raises ``RuntimeError`` if one is already running."""
+        """Start a run. Raises ``RuntimeError`` if one is already running.
+
+        ``on_finish(result, error)`` is called once on the runner thread, after
+        the run is no longer considered running. It gets this run's outcome as
+        arguments: by the time it runs, another start may already have reset
+        ``result``/``error``. It is how the queue hands off to the next book
+        without a polling thread.
+        """
         with self._lock:
-            if self.is_running():
+            if self._running:
                 raise RuntimeError("A translation run is already in progress.")
             self._queue = queue.Queue()
             self._events = []
             self._log_history = []
             self._result = None
             self._error = None
+            self._on_finish = on_finish
+            self._running = True
             self._thread = threading.Thread(
                 target=self._run,
                 args=(Path(epub_path), settings, options, components),
                 daemon=True,
                 name="kannada-book-run",
             )
-            self._thread.start()
+            try:
+                self._thread.start()
+            except BaseException:
+                self._running = False
+                self._on_finish = None
+                raise
 
     def cancel(self) -> None:
         """Request cancellation; the pipeline stops at the next chapter."""
         self._cancel.set()
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return self._running
 
     # -- output ------------------------------------------------------------
     def drain(self) -> list[str]:
@@ -135,3 +156,13 @@ class BookRun:
             # cancelled. Cancelling while idle (before start) still cancels the
             # next run, which is the documented "cancel before processing".
             self._cancel.clear()
+            with self._lock:
+                result, error = self._result, self._error
+                self._running = False
+                on_finish = self._on_finish
+                self._on_finish = None
+            if on_finish is not None:
+                try:
+                    on_finish(result, error)
+                except Exception:  # noqa: BLE001 — a callback must not kill the runner
+                    logger.exception("Book run completion callback failed")
