@@ -203,6 +203,51 @@ async def check_sidebar_navigation(devtools: DevTools) -> None:
         devtools.assert_no_browser_errors(f"sidebar {route}")
 
 
+async def check_sections_controls(devtools: DevTools) -> None:
+    """The per-book sections list renders one checkbox per chapter and gates
+    the Translate button."""
+    count = await devtools.evaluate(
+        "document.querySelectorAll('#sections-list [data-section-id]').length"
+    )
+    assert count == 13, f"expected 13 section checkboxes, got {count}"
+    card_text = await devtools.evaluate(
+        "document.querySelector('.book-card')?.innerText || ''"
+    )
+    assert f"{count} chapters" in card_text, card_text
+    summary = await devtools.evaluate(
+        "document.getElementById('sections-summary')?.innerText || ''"
+    )
+    assert summary.startswith("13 of 13"), summary
+
+    # Unticking one chapter updates the summary count and paragraph total.
+    await devtools.evaluate(
+        "document.querySelector('#sections-list [data-section-id]').click()"
+    )
+    summary = await devtools.evaluate(
+        "document.getElementById('sections-summary')?.innerText || ''"
+    )
+    assert summary.startswith("12 of 13"), summary
+
+    # No sections ticked: the Translate button is disabled with a message.
+    await devtools.evaluate("document.getElementById('sections-none').click()")
+    disabled = await devtools.evaluate("document.getElementById('start-run').disabled")
+    warning = await devtools.evaluate(
+        "document.getElementById('sections-warning')?.innerText || ''"
+    )
+    assert disabled is True, "Translate must be disabled with no sections selected"
+    assert "Choose at least one section" in warning, warning
+
+    # Select all restores every box and re-enables the button.
+    await devtools.evaluate("document.getElementById('sections-all').click()")
+    disabled = await devtools.evaluate("document.getElementById('start-run').disabled")
+    summary = await devtools.evaluate(
+        "document.getElementById('sections-summary')?.innerText || ''"
+    )
+    assert disabled is False, "Translate must be enabled once sections are chosen"
+    assert summary.startswith("13 of 13"), summary
+    devtools.assert_no_browser_errors("sections controls")
+
+
 async def upload_and_translate(devtools: DevTools) -> tuple[str, str]:
     await devtools.evaluate("location.hash = '#/translate'")
     await wait_for_heading(devtools, "Bring a book to Kannada")
@@ -223,6 +268,8 @@ async def upload_and_translate(devtools: DevTools) -> tuple[str, str]:
         "document.querySelector('.book-card h3')?.innerText || ''",
         lambda value: value and "Sherlock Holmes" in value,
     )
+
+    await check_sections_controls(devtools)
 
     await devtools.evaluate("document.getElementById('preview-option').click()")
     preview_is_visible = await devtools.evaluate(

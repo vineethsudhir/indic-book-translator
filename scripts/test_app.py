@@ -7,6 +7,7 @@ blocked. No models, no network.
 Run: .venv/bin/python scripts/test_app.py
 """
 
+import json
 import os
 import re
 import stat
@@ -43,6 +44,7 @@ from kannada_epub.app.settings import (  # noqa: E402
 )
 from kannada_epub.config import BookConfig, load_provider_config  # noqa: E402
 from kannada_epub.consistency_editor import ConsistencyEditor  # noqa: E402
+from kannada_epub.epub_io import load_epub_chapters  # noqa: E402
 from kannada_epub.glossary import GlossaryStore  # noqa: E402
 from kannada_epub.pipeline import PipelineComponents, RunOptions  # noqa: E402
 
@@ -414,6 +416,97 @@ def test_api() -> None:
         assert client.get("/api/library/..%2F..%2Fetc/chapters", headers=authed).status_code == 404
         traversal = client.get(f"/api/library/{uploaded['book_id']}/files/..%2Fsettings.yaml?token={token}", headers=headers)
         assert traversal.status_code == 404
+
+        # --- per-book skipped sections (issue #6) --------------------------
+        real_ids = [item["id"] for item in chapters]
+        assert len(real_ids) == 13, real_ids
+        skip_id = real_ids[0]
+        global_exclude_ids = list(load_settings().exclude_ids)
+        expected_exclude_ids = list(dict.fromkeys(global_exclude_ids + [skip_id]))
+        settings_before = settings_path().read_text(encoding="utf-8")
+
+        # skip_chapters must be a list of strings.
+        bad_type = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "skip_chapters": skip_id,
+        })
+        assert bad_type.status_code == 400, bad_type.text
+        assert bad_type.json()["detail"] == "Sections to skip must be a list of section ids."
+        bad_item = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "skip_chapters": [skip_id, 7],
+        })
+        assert bad_item.status_code == 400, bad_item.text
+        assert bad_item.json()["detail"] == "Sections to skip must be a list of section ids."
+
+        # An unknown id is refused without echoing more than 100 characters.
+        unknown = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "skip_chapters": ["x" * 150],
+        })
+        assert unknown.status_code == 400, unknown.text
+        unknown_detail = unknown.json()["detail"]
+        assert unknown_detail.startswith("Unknown section: ") and unknown_detail.endswith(".")
+        assert "x" * 150 not in unknown_detail
+        assert len(unknown_detail) <= len("Unknown section: ") + 101
+
+        # Skipping every chapter is refused.
+        skip_everything = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "skip_chapters": real_ids,
+        })
+        assert skip_everything.status_code == 400, skip_everything.text
+        assert skip_everything.json()["detail"] == "Choose at least one section."
+
+        # A real skip runs with the global ids plus the skipped one, for this
+        # run only: the settings file on disk must not change.
+        skip_started = client.post("/api/run", headers=authed, json={
+            "book_id": uploaded["book_id"], "qa": False, "skip_chapters": [skip_id],
+        })
+        assert skip_started.status_code == 200, skip_started.text
+        assert skip_started.json()["skipped_chapters"] == [skip_id]
+        assert wait_until(
+            lambda: client.get("/api/run", headers=authed).json()["state"] == "finished"
+        )
+        skip_status = client.get("/api/run", headers=authed).json()
+        assert skip_status["skipped_chapters"] == [skip_id], skip_status
+        assert settings_path().read_text(encoding="utf-8") == settings_before
+
+        folder = DATA_DIR / "outputs" / uploaded["book_id"]
+        manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["exclude_ids"] == expected_exclude_ids, manifest["exclude_ids"]
+        assert skip_id not in [chapter["id"] for chapter in manifest["chapters"]]
+
+        # A finished run with a skip is not shown as incomplete.
+        entry = next(
+            item for item in client.get("/api/library", headers=authed).json()
+            if item["book_id"] == uploaded["book_id"]
+        )
+        assert entry["preview"] is False, entry
+        assert entry["paragraphs_translated"] == entry["paragraphs_total"], entry
+
+        # Older manifests have no paragraphs_total/preview and may still list
+        # the skipped chapter; the recorded exclude_ids must drive the total, or
+        # the skipped chapter counts as untranslated work.
+        source_chapter = next(
+            chapter for chapter in load_epub_chapters(EPUB, exclude_ids=global_exclude_ids)
+            if chapter.id == skip_id
+        )
+        manifest.pop("paragraphs_total", None)
+        manifest.pop("preview", None)
+        manifest["chapters"].append({
+            "id": skip_id,
+            "title": source_chapter.title or skip_id,
+            "paragraphs": len(source_chapter.paragraphs),
+            "total_paragraphs": len(source_chapter.paragraphs),
+        })
+        (folder / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        legacy_entry = next(
+            item for item in client.get("/api/library", headers=authed).json()
+            if item["book_id"] == uploaded["book_id"]
+        )
+        assert legacy_entry["preview"] is False, legacy_entry
+        assert (
+            legacy_entry["paragraphs_translated"] == legacy_entry["paragraphs_total"]
+        ), legacy_entry
 
     assert set(local_mode_status()).issuperset(
         {"torch", "transformers", "ctranslate2", "sentencepiece", "IndicTransToolkit", "parler_tts"}

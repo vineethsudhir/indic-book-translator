@@ -10,6 +10,7 @@
     state: null,
     book: null,
     run: null,
+    sectionSelections: null,
     stopConfirm: false,
     poll: null,
   };
@@ -260,6 +261,121 @@
     </section>`;
   }
 
+  // Per-run section selection. Selections live in appState (never
+  // localStorage) and are reset whenever another book is uploaded.
+  function sectionSelection(book) {
+    if (!appState.sectionSelections) {
+      appState.sectionSelections = {};
+      book.chapters.forEach(chapter => {
+        appState.sectionSelections[chapter.id] = true;
+      });
+    }
+    return appState.sectionSelections;
+  }
+
+  function sectionsSummary(selectedCount, total, paragraphs) {
+    return `${selectedCount} of ${total} · ${paragraphs.toLocaleString()} paragraph${
+      paragraphs === 1 ? "" : "s"
+    }`;
+  }
+
+  function sectionsMarkup(book) {
+    if (!book || !book.chapters.length) return "";
+    const selections = sectionSelection(book);
+    const total = book.chapters.length;
+    const selected = book.chapters.filter(chapter => selections[chapter.id] !== false);
+    const paragraphs = selected.reduce(
+      (sum, chapter) => sum + Number(chapter.paragraphs || 0),
+      0,
+    );
+    const rows = book.chapters.map(chapter => {
+      const checked = selections[chapter.id] !== false;
+      const count = Number(chapter.paragraphs) || 0;
+      return `<label class="section-row">
+        <input type="checkbox" data-section-id="${escapeHtml(chapter.id)}"
+          data-paragraphs="${count}" ${checked ? "checked" : ""}>
+        <span class="section-title">${escapeHtml(chapter.title || chapter.id)}</span>
+        <span class="section-count">${count} paragraph${count === 1 ? "" : "s"}</span>
+      </label>`;
+    }).join("");
+
+    return `<details class="sections" id="sections">
+      <summary>Sections to translate (<span id="sections-summary">${
+        sectionsSummary(selected.length, total, paragraphs)
+      }</span>)</summary>
+      <div class="sections-tools">
+        <button class="button quiet" type="button" id="sections-all">Select all</button>
+        <button class="button quiet" type="button" id="sections-none">Select none</button>
+      </div>
+      <div class="sections-list" id="sections-list">${rows}</div>
+    </details>
+    <div id="sections-warning">${
+      selected.length ? "" : inlineMessage("Choose at least one section.")
+    }</div>`;
+  }
+
+  function hasSelectedSections() {
+    const boxes = document.querySelectorAll("[data-section-id]");
+    if (!boxes.length) return true;
+    return [...boxes].some(box => box.checked);
+  }
+
+  function connectSections() {
+    const list = document.getElementById("sections-list");
+    if (!list) return;
+    list.addEventListener("change", event => {
+      if (!event.target.matches("[data-section-id]")) return;
+      if (appState.sectionSelections) {
+        appState.sectionSelections[event.target.dataset.sectionId] = event.target.checked;
+      }
+      updateSectionsState();
+    });
+    document.getElementById("sections-all")?.addEventListener(
+      "click",
+      () => setAllSections(true),
+    );
+    document.getElementById("sections-none")?.addEventListener(
+      "click",
+      () => setAllSections(false),
+    );
+    updateSectionsState();
+  }
+
+  function setAllSections(checked) {
+    document.querySelectorAll("[data-section-id]").forEach(box => {
+      box.checked = checked;
+      if (appState.sectionSelections) {
+        appState.sectionSelections[box.dataset.sectionId] = checked;
+      }
+    });
+    updateSectionsState();
+  }
+
+  function updateSectionsState() {
+    const boxes = [...document.querySelectorAll("[data-section-id]")];
+    if (!boxes.length) return;
+    const selected = boxes.filter(box => box.checked);
+    const paragraphs = selected.reduce(
+      (sum, box) => sum + Number(box.dataset.paragraphs || 0),
+      0,
+    );
+    const summary = document.getElementById("sections-summary");
+    if (summary) {
+      summary.textContent = sectionsSummary(selected.length, boxes.length, paragraphs);
+    }
+    const warning = document.getElementById("sections-warning");
+    const startButton = document.getElementById("start-run");
+    if (selected.length) {
+      if (warning) warning.innerHTML = "";
+      if (startButton && appState.book && appState.run?.state !== "running") {
+        startButton.disabled = false;
+      }
+    } else {
+      if (warning) warning.innerHTML = inlineMessage("Choose at least one section.");
+      if (startButton) startButton.disabled = true;
+    }
+  }
+
   async function renderTranslate() {
     const state = await refreshState();
     const run = await api("/api/run");
@@ -285,6 +401,7 @@
       <div class="step-body">
         <h2 class="step-title">Translate</h2>
         <div id="precheck"></div>
+        ${sectionsMarkup(appState.book)}
         <div class="actions">
           ${button(
             isRunning ? "Translation in progress…" : "Translate book",
@@ -305,6 +422,7 @@
 
     connectBookPicker();
     connectTranslateOptions();
+    connectSections();
     connectRunControls(run);
   }
 
@@ -319,6 +437,7 @@
     const changeButton = document.getElementById("change-book");
     changeButton?.addEventListener("click", () => {
       appState.book = null;
+      appState.sectionSelections = null;
       renderTranslate();
     });
 
@@ -365,6 +484,7 @@
     body.append("file", file);
     try {
       appState.book = await api("/api/books", { method: "POST", body });
+      appState.sectionSelections = null;
       await renderTranslate();
     } catch (error) {
       precheck.innerHTML = inlineMessage(error.message, true);
@@ -380,6 +500,17 @@
       return;
     }
 
+    if (!hasSelectedSections()) {
+      document.getElementById("precheck").innerHTML = inlineMessage(
+        "Choose at least one section.",
+        true,
+      );
+      return;
+    }
+
+    const skipChapters = [...document.querySelectorAll("[data-section-id]")]
+      .filter(box => !box.checked)
+      .map(box => box.dataset.sectionId);
     const quickPreview = document.getElementById("preview-option").checked;
     const request = {
       book_id: appState.book.book_id,
@@ -388,6 +519,7 @@
       preview_paragraphs: quickPreview
         ? Number(document.getElementById("preview-count").value)
         : null,
+      skip_chapters: skipChapters,
     };
 
     try {
@@ -433,7 +565,9 @@
         clearInterval(appState.poll);
         appState.poll = null;
         const startButton = document.getElementById("start-run");
-        if (startButton) startButton.disabled = !appState.book;
+        if (startButton) {
+          startButton.disabled = !appState.book || !hasSelectedSections();
+        }
       }
     } catch (error) {
       const panel = document.getElementById("run-panel");
@@ -448,6 +582,12 @@
     if (run.state === "cancelled") return cancelledPanel(run);
     if (run.state === "failed") return failedPanel(run);
     return "";
+  }
+
+  function skippedSectionsNote(run) {
+    const ids = run.skipped_chapters;
+    if (!Array.isArray(ids) || !ids.length) return "";
+    return `<p class="muted skipped-note">Skipping ${ids.length} section(s)</p>`;
   }
 
   function runningPanel(run) {
@@ -471,6 +611,7 @@
 
     return `<div class="card section-gap">
       <div class="run-meta"><strong>${chapter}</strong><span>${stage}</span></div>
+      ${skippedSectionsNote(run)}
       <div class="progress-track" role="progressbar" aria-valuenow="${percent}"
         aria-valuemin="0" aria-valuemax="100">
         <div class="progress-fill" style="width:${percent}%"></div>
@@ -520,6 +661,7 @@
       <div class="result-icon" aria-hidden="true">✓</div>
       <h2>${escapeHtml(heading)}</h2>
       <p>${escapeHtml(intro)}</p>
+      ${skippedSectionsNote(run)}
       ${summary}
       <div class="actions">
         ${result.epub ? button("Open in Books app", "primary", "data-open=epub") : ""}
@@ -578,7 +720,7 @@
       startButton.disabled = true;
       appState.poll = setInterval(pollRun, 900);
     } else if (appState.book) {
-      startButton.disabled = false;
+      startButton.disabled = !hasSelectedSections();
     }
     startButton.addEventListener("click", startRun);
     connectRunPanelButtons(run);

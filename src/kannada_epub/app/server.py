@@ -127,7 +127,14 @@ def _book_outputs(folder: Path, manifest: dict) -> dict:
         if source is not None:
             try:
                 wanted = {c.get("id") for c in chapters}
-                source_chapters = load_epub_chapters(source, exclude_ids=load_settings().exclude_ids)
+                # Older manifests have no "preview"/"paragraphs_total", but a
+                # run that skipped sections records the exclude_ids it ran
+                # with. Prefer those over today's global setting, so a skipped
+                # chapter still present in the source isn't counted as work
+                # the finished book never intended to do.
+                recorded = manifest.get("exclude_ids")
+                exclude_ids = recorded if isinstance(recorded, list) else load_settings().exclude_ids
+                source_chapters = load_epub_chapters(source, exclude_ids=exclude_ids)
                 total = sum(len(c.paragraphs) for c in source_chapters if c.id in wanted) or translated
             except Exception:
                 pass
@@ -197,7 +204,13 @@ def create_app(
     runner = BookRun()
     app.state.app_token = token
     app.state.runner = runner
-    app.state.run_meta = {"book_id": None, "filename": None, "chapters": [], "started": None}
+    app.state.run_meta = {
+        "book_id": None,
+        "filename": None,
+        "chapters": [],
+        "started": None,
+        "skipped_chapters": [],
+    }
     app.state.components_factory = components_factory
 
     static_dir = Path(__file__).parent / "static"
@@ -364,8 +377,26 @@ def create_app(
         audiobook = payload.get("audiobook", False)
         if not isinstance(qa_enabled, bool) or not isinstance(audiobook, bool):
             raise HTTPException(400, "Quality check and audiobook options must be true or false.")
+        skip_chapters = payload.get("skip_chapters", [])
+        if not isinstance(skip_chapters, list) or not all(
+            isinstance(item, str) for item in skip_chapters
+        ):
+            raise HTTPException(400, "Sections to skip must be a list of section ids.")
+        skip_ids = _dedupe(skip_chapters)
+        if skip_ids:
+            try:
+                available = load_epub_chapters(source, exclude_ids=settings.exclude_ids)
+            except Exception as exc:  # noqa: BLE001 — the EPUB was validated at upload
+                raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
+            available_ids = {chapter.id for chapter in available}
+            for skip_id in skip_ids:
+                if skip_id not in available_ids:
+                    raise HTTPException(400, f"Unknown section: {skip_id[:100]}.")
+            if not available_ids - set(skip_ids):
+                raise HTTPException(400, "Choose at least one section.")
         settings = settings.model_copy(update={
-            "qa": settings.qa.model_copy(update={"enabled": qa_enabled})
+            "qa": settings.qa.model_copy(update={"enabled": qa_enabled}),
+            "exclude_ids": _dedupe(settings.exclude_ids + skip_ids),
         })
         load_secrets_into_env()
         missing_keys, missing_modules = _requirements(settings, audiobook)
@@ -400,6 +431,7 @@ def create_app(
             "filename": filename,
             "chapters": [],
             "started": time.time(),
+            "skipped_chapters": skip_ids,
         }
         components = components_factory() if components_factory is not None else None
         try:
@@ -602,6 +634,7 @@ def _run_status(app: FastAPI) -> dict:
         "current_chapter_title": chapter_title,
         "stage": stage,
         "narrating": narrating,
+        "skipped_chapters": meta.get("skipped_chapters", []),
         "elapsed_seconds": max(0, int(time.time() - meta["started"])) if meta.get("started") else 0,
         "log_tail": runner.log_tail(200),
         "error": runner.error,

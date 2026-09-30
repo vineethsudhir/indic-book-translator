@@ -443,6 +443,7 @@ def run_book(
     manifest: dict = {
         "epub": str(epub_path),
         "preview": is_preview,
+        "exclude_ids": list(cfg.exclude_ids),
         "paragraphs_translated": 0,
         "paragraphs_total": 0,
         "chapters": [],

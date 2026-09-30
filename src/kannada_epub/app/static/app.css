@@ -468,6 +468,63 @@ label.field-label {
   cursor: pointer;
   font-size: 13px;
 }
+.sections {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.sections > summary {
+  cursor: pointer;
+  font-weight: 620;
+  font-size: 14px;
+}
+.sections-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0;
+}
+.sections-tools .button {
+  padding: 5px 10px;
+  font-size: 13px;
+}
+.sections-list {
+  display: grid;
+  gap: 2px;
+  max-height: 280px;
+  overflow: auto;
+}
+.section-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 4px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.section-row:hover {
+  background: var(--soft);
+}
+.section-row input {
+  flex: none;
+  accent-color: var(--accent);
+}
+.section-row .section-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.section-row .section-count {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.skipped-note {
+  margin: 8px 0 0;
+}
 .log {
   max-height: 260px;
   overflow: auto;
