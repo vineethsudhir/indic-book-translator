@@ -54,6 +54,10 @@ class QAConfig(BaseModel):
     embedding_api_key_env: Optional[str] = None
     pass_threshold: float = 0.85
     flag_threshold: float = 0.70
+    # On a QA retry, ask the translation engine to vary its decoding setup
+    # (higher cloud temperature, or a wider local beam) instead of repeating
+    # the call that already scored poorly. See TranslationProvider.
+    vary_retry: bool = True
 
 
 class BookConfig(BaseModel):

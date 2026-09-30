@@ -1532,6 +1532,14 @@
           <small>You can also change this for each book.</small>
         </span>
       </label>
+      <label class="toggle-row">
+        <input class="switch" type="checkbox" id="qa-vary-retry"
+          ${settings.qa.vary_retry !== false ? "checked" : ""}>
+        <span class="toggle-copy">
+          <strong>Vary settings when re-trying low-scoring paragraphs</strong>
+          <small>Use different translation settings on a retry so it isn't identical.</small>
+        </span>
+      </label>
       <div class="field">
         <span class="field-label">Back-translation</span>
         ${radioChoices("qa-back", backTranslation, settings.qa.back_translation, local)}
@@ -1811,6 +1819,7 @@
         embedding_api_key_env: optionalFieldValue("q-key"),
         pass_threshold: Number(fieldValue("q-pass")),
         flag_threshold: Number(fieldValue("q-flag")),
+        vary_retry: document.getElementById("qa-vary-retry").checked,
       },
       batch_size: Number(fieldValue("batch-size")),
       tone_register: fieldValue("register"),

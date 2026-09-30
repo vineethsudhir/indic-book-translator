@@ -32,6 +32,7 @@ from epub_fixture import build_epub
 from kannada_epub import pipeline as pipeline_module
 from kannada_epub.book_translator import (
     BookTranslator,
+    TranslatedBatch,
     chapter_context_tail,
     detect_chapter_context,
 )
@@ -52,7 +53,7 @@ from kannada_epub.epubcheck_runner import EpubcheckResult
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
 from kannada_epub.providers.base import OutputTruncatedError
-from kannada_epub.qa import FLAGGED_FOR_REVIEW, PASS
+from kannada_epub.qa import FLAGGED_FOR_REVIEW, PASS, RETRY
 from kannada_epub.translation.base import TranslationProvider
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -234,6 +235,51 @@ class FakeEmbedder:
             else:
                 vectors.append([1.0, 0.0])
         return vectors
+
+
+class RetryBackTranslator:
+    """Two paragraphs score RETRY; on retry one improves, one gets worse.
+
+    The first call (the whole chapter, three paragraphs) scores p0/p1 RETRY
+    and p2 PASS. The second call (the two retried paragraphs) scores p0 higher
+    and p1 lower, so the pipeline must keep p0's retry and discard p1's.
+    """
+
+    def __init__(self):
+        self.n_calls = 0
+
+    def back_translate(self, kannada: list[str]) -> list[str]:
+        self.n_calls += 1
+        if self.n_calls == 1:
+            return ["q:0.75", "q:0.80", "q:1.0"]
+        return ["q:0.95", "q:0.5"]
+
+
+class RetryRecordingEngine(FakeTranslationEngine):
+    """Records QA retries and returns text visibly different from the draft."""
+
+    retry_description = "test variation"
+
+    def __init__(self):
+        super().__init__()
+        self.retry_calls = 0
+        self.retry_batch_sizes: list[int] = []
+
+    def translate_paragraphs_retry(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        self.retry_calls += 1
+        self.retry_batch_sizes.append(len(paragraphs))
+        return [f"RETRY {text}" for text in paragraphs]
+
+
+class MismatchedRetryEngine(FakeTranslationEngine):
+    """A retry that returns the wrong number of strings."""
+
+    def translate_paragraphs_retry(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        return ["only one"]
 
 
 def _resolve(path_str: str) -> Path:
@@ -1050,6 +1096,108 @@ def _check_number_only_paragraphs(tmp: Path) -> None:
     assert restore_untranslatable(resumed) == 0
 
 
+def _qa_chapter() -> tuple[Chapter, list[TranslatedBatch]]:
+    """One chapter of three paragraphs and its single batch."""
+    chapter = Chapter(
+        id="qa-chapter",
+        title="QA",
+        paragraphs=[Paragraph(0, "Alpha."), Paragraph(1, "Beta."), Paragraph(2, "Gamma.")],
+    )
+    batch = TranslatedBatch(
+        chapter_id="qa-chapter",
+        chapter_title="QA",
+        paragraph_start=0,
+        paragraph_end=3,
+        source_english=["Alpha.", "Beta.", "Gamma."],
+        draft_kannada=["draft A", "draft B", "draft C"],
+        edited_kannada=["kn A", "kn B", "kn C"],
+        edited_emotions=["Narration"] * 3,
+        prior_context_used="",
+    )
+    return chapter, [batch]
+
+
+def _qa_components(engine, out_dir: Path) -> PipelineComponents:
+    return PipelineComponents(
+        translation_engine=engine,
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(out_dir / "glossary.db"),
+        qa=(RetryBackTranslator(), FakeEmbedder()),
+    )
+
+
+def _check_qa_retry(tmp: Path) -> None:
+    """QA retries vary settings, keep only improvements, and never misalign."""
+    # --- vary_retry: retry path used, improved kept, worse discarded ------
+    run_dir = tmp / "qa_retry"
+    engine = RetryRecordingEngine()
+    cfg = _make_cfg(run_dir)
+    chapter, batches = _qa_chapter()
+    lines: list[str] = []
+    results = pipeline_module._run_chapter_qa(
+        cfg, _qa_components(engine, run_dir), chapter, batches, run_dir, lines.append
+    )
+    assert engine.retry_calls == 1, engine.retry_calls
+    assert engine.retry_batch_sizes == [2], engine.retry_batch_sizes
+    # Position 0 improved -> retry kept; position 1 worsened -> draft kept.
+    assert results[0].status == PASS, results[0]
+    assert results[1].status == RETRY, results[1]  # worse retry discarded
+    assert batches[0].edited_kannada == ["RETRY Alpha.", "kn B", "kn C"], (
+        batches[0].edited_kannada
+    )
+    assert any(
+        line == "[qa-chapter] QA retry: 2 paragraph(s) re-translated "
+        "(test variation); 1 improved"
+        for line in lines
+    ), lines
+    cache = json.loads((run_dir / "qa" / "qa-chapter.json").read_text(encoding="utf-8"))
+    assert cache["retries"] == [
+        {"paragraph_index": 0, "kept": True},
+        {"paragraph_index": 1, "kept": False},
+    ], cache["retries"]
+
+    # --- vary_retry=False: the plain method is used, not the retry --------
+    off_dir = tmp / "qa_retry_off"
+    off_engine = RetryRecordingEngine()
+    off_cfg = _make_cfg(off_dir)
+    off_cfg.qa.vary_retry = False
+    off_chapter, off_batches = _qa_chapter()
+    off_lines: list[str] = []
+    pipeline_module._run_chapter_qa(
+        off_cfg,
+        _qa_components(off_engine, off_dir),
+        off_chapter,
+        off_batches,
+        off_dir,
+        off_lines.append,
+    )
+    assert off_engine.retry_calls == 0, off_engine.retry_calls
+    assert off_engine.calls == 1, off_engine.calls  # the plain method ran
+    assert any(
+        line == "[qa-chapter] QA retry: 2 paragraph(s) re-translated "
+        "(same settings); 1 improved"
+        for line in off_lines
+    ), off_lines
+
+    # --- a wrong retry count raises instead of shifting paragraphs --------
+    bad_dir = tmp / "qa_retry_bad"
+    bad_cfg = _make_cfg(bad_dir)
+    bad_chapter, bad_batches = _qa_chapter()
+    try:
+        pipeline_module._run_chapter_qa(
+            bad_cfg,
+            _qa_components(MismatchedRetryEngine(), bad_dir),
+            bad_chapter,
+            bad_batches,
+            bad_dir,
+            lambda _msg: None,
+        )
+    except RuntimeError as exc:
+        assert "refusing to misalign" in str(exc), exc
+    else:
+        raise AssertionError("expected RuntimeError for a misaligned retry")
+
+
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}
     source_item4 = source[CHAPTER_ID]
@@ -1217,6 +1365,8 @@ def main() -> None:
         _check_epubcheck(tmp)
         # --- cross-chapter context: carry/reset, tail size, resume, manifest -
         _check_chapter_context_pipeline(tmp)
+        # --- QA retry: varied settings, improved-only, strict count --------
+        _check_qa_retry(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

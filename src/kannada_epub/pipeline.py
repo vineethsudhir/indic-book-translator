@@ -289,13 +289,32 @@ def _run_chapter_qa(
     )
 
     # One retry per RETRY paragraph: re-translate just those English
-    # paragraphs and keep the new text/score only when it scores higher.
+    # paragraphs and keep the new text/score only when it scores higher. By
+    # default the retry varies the decoding setup (see QAConfig.vary_retry and
+    # TranslationProvider.translate_paragraphs_retry) so a deterministic engine
+    # does not just reproduce the same output.
     retry_positions = [i for i, result in enumerate(results) if result.status == RETRY]
+    retries: list[dict] = []
     if retry_positions:
         retry_english = [source_english[i] for i in retry_positions]
-        new_drafts = components.translation_engine.translate_paragraphs(
-            retry_english, "eng_Latn", "kan_Knda"
-        )
+        engine = components.translation_engine
+        if cfg.qa.vary_retry:
+            new_drafts = engine.translate_paragraphs_retry(
+                retry_english, "eng_Latn", "kan_Knda"
+            )
+            description = getattr(engine, "retry_description", "same settings")
+        else:
+            new_drafts = engine.translate_paragraphs(
+                retry_english, "eng_Latn", "kan_Knda"
+            )
+            description = "same settings"
+        # Strict: a retry is a 1:1 map of paragraphs. A wrong count would shift
+        # retried text onto the wrong positions, so refuse rather than guess.
+        if len(new_drafts) != len(retry_english):
+            raise RuntimeError(
+                f"[{chapter.id}] QA retry returned {len(new_drafts)} strings for "
+                f"{len(retry_english)} paragraphs — refusing to misalign"
+            )
         retried_results = evaluate(
             retry_english,
             new_drafts,
@@ -306,10 +325,18 @@ def _run_chapter_qa(
             pass_threshold=cfg.qa.pass_threshold,
             flag_threshold=cfg.qa.flag_threshold,
         )
+        improved = 0
         for k, position in enumerate(retry_positions):
-            if retried_results[k].similarity_score > results[position].similarity_score:
+            kept = retried_results[k].similarity_score > results[position].similarity_score
+            if kept:
                 edited[position] = new_drafts[k]
                 results[position] = retried_results[k]
+                improved += 1
+            retries.append({"paragraph_index": paragraph_indices[position], "kept": kept})
+        progress(
+            f"[{chapter.id}] QA retry: {len(retry_positions)} paragraph(s) "
+            f"re-translated ({description}); {improved} improved"
+        )
 
     _assign_edited(batches, edited)
 
@@ -320,6 +347,7 @@ def _run_chapter_qa(
                 "source_english": source_english,
                 "results": [asdict(r) for r in results],
                 "kannada": edited,
+                "retries": retries,
             },
             ensure_ascii=False,
             indent=2,

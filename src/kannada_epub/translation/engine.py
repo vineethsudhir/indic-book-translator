@@ -134,6 +134,8 @@ class IndicTrans2Engine(TranslationProvider):
     paragraphs lost their final 1-2 sentences with no error or warning.
     """
 
+    retry_description = "wider beam, repetition penalty"
+
     def __init__(
         self,
         ct2_model_dir: str | Path,
@@ -163,9 +165,21 @@ class IndicTrans2Engine(TranslationProvider):
         self._max_input_length = max_content_tokens + 8
         self._max_decoding_length = max_decoding_length
 
-    def translate(self, sentences: list[str], src_lang: str, tgt_lang: str) -> list[str]:
+    def translate(
+        self,
+        sentences: list[str],
+        src_lang: str,
+        tgt_lang: str,
+        *,
+        beam_size: int | None = None,
+        repetition_penalty: float | None = None,
+    ) -> list[str]:
         """Translate a batch of already-segmented sentences. `src_lang`/`tgt_lang`
-        are FLORES-200 codes, e.g. "eng_Latn" / "kan_Knda"."""
+        are FLORES-200 codes, e.g. "eng_Latn" / "kan_Knda".
+
+        ``beam_size``/``repetition_penalty`` are optional decoding overrides for
+        QA retries; leaving them None keeps the constructor's normal settings.
+        """
         if not sentences:
             return []
 
@@ -185,14 +199,16 @@ class IndicTrans2Engine(TranslationProvider):
                 chunk_owner.append(i)
 
         tokenized = [[src_lang, tgt_lang, *chunk] for chunk in chunks]
-        results = self._translator.translate_batch(
-            tokenized,
-            max_batch_size=2048,
-            batch_type="tokens",
-            max_input_length=self._max_input_length,
-            max_decoding_length=self._max_decoding_length,
-            beam_size=self._beam_size,
-        )
+        decoding: dict = {
+            "max_batch_size": 2048,
+            "batch_type": "tokens",
+            "max_input_length": self._max_input_length,
+            "max_decoding_length": self._max_decoding_length,
+            "beam_size": self._beam_size if beam_size is None else beam_size,
+        }
+        if repetition_penalty is not None:
+            decoding["repetition_penalty"] = repetition_penalty
+        results = self._translator.translate_batch(tokenized, **decoding)
         translated_pieces = [" ".join(r.hypotheses[0]) for r in results]
         detokenized_chunks = [p.replace(" ", "").replace("▁", " ").strip() for p in translated_pieces]
 
@@ -202,21 +218,15 @@ class IndicTrans2Engine(TranslationProvider):
 
         return self._processor.postprocess_batch(merged, lang=tgt_lang)
 
-    def translate_paragraphs(self, paragraphs: list[str], src_lang: str, tgt_lang: str) -> list[str]:
-        """Translate paragraph-level text by splitting into sentences first —
-        matching how IndicTrans2 was trained/evaluated — and rejoining after
-        translation, rather than feeding a whole multi-sentence paragraph
-        through as one unit (which also degrades quality independent of the
-        truncation risk: the model attends over one long blob instead of
-        clean per-sentence input).
-
-        Roman-numeral chapter/section markers ("I.", "III. THE RED-HEADED
-        LEAGUE") are stripped before translation and reattached verbatim
-        afterward — verified in testing: fed through untouched, the model
-        has no way to distinguish the numeral "I" from the pronoun "I" and
-        transliterates it as if it were the word ("I." -> "ಐ.", a Kannada
-        vowel sound, instead of staying "I.").
-        """
+    def _translate_paragraphs_variant(
+        self,
+        paragraphs: list[str],
+        src_lang: str,
+        tgt_lang: str,
+        *,
+        beam_size: int | None,
+        repetition_penalty: float | None,
+    ) -> list[str]:
         heading_numerals: dict[int, str] = {}
         texts_to_translate: list[str] = []
         for para in paragraphs:
@@ -235,7 +245,13 @@ class IndicTrans2Engine(TranslationProvider):
                 all_sentences.append(sent)
                 owner.append(i)
 
-        translated = self.translate(all_sentences, src_lang, tgt_lang)
+        translated = self.translate(
+            all_sentences,
+            src_lang,
+            tgt_lang,
+            beam_size=beam_size,
+            repetition_penalty=repetition_penalty,
+        )
 
         merged = [""] * len(paragraphs)
         for idx, text in zip(owner, translated, strict=True):
@@ -245,3 +261,39 @@ class IndicTrans2Engine(TranslationProvider):
             merged[idx] = f"{numeral} {merged[idx]}".strip() if merged[idx] else numeral
 
         return merged
+
+    def translate_paragraphs(self, paragraphs: list[str], src_lang: str, tgt_lang: str) -> list[str]:
+        """Translate paragraph-level text by splitting into sentences first —
+        matching how IndicTrans2 was trained/evaluated — and rejoining after
+        translation, rather than feeding a whole multi-sentence paragraph
+        through as one unit (which also degrades quality independent of the
+        truncation risk: the model attends over one long blob instead of
+        clean per-sentence input).
+
+        Roman-numeral chapter/section markers ("I.", "III. THE RED-HEADED
+        LEAGUE") are stripped before translation and reattached verbatim
+        afterward — verified in testing: fed through untouched, the model
+        has no way to distinguish the numeral "I" from the pronoun "I" and
+        transliterates it as if it were the word ("I." -> "ಐ.", a Kannada
+        vowel sound, instead of staying "I.").
+        """
+        return self._translate_paragraphs_variant(
+            paragraphs, src_lang, tgt_lang, beam_size=None, repetition_penalty=None
+        )
+
+    def translate_paragraphs_retry(
+        self, paragraphs: list[str], src_lang: str, tgt_lang: str
+    ) -> list[str]:
+        """Retry a low-scoring paragraph with a wider beam and a repetition
+        penalty, so a deterministic beam search does not reproduce the exact
+        translation that already scored badly. Everything else (sentence
+        splitting, roman-numeral handling, chunking, postprocessing) is the
+        same as the normal path.
+        """
+        return self._translate_paragraphs_variant(
+            paragraphs,
+            src_lang,
+            tgt_lang,
+            beam_size=max(self._beam_size + 3, 8),
+            repetition_penalty=1.2,
+        )
