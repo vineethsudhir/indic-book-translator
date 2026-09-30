@@ -21,9 +21,11 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import lxml.etree as ET
 from bs4 import BeautifulSoup
+from epub_fixture import build_epub
 
 from kannada_epub.book_translator import BookTranslator
 from kannada_epub.config import BookConfig
@@ -427,6 +429,56 @@ def _check_split_and_resume(tmp: Path) -> None:
     assert CHAPTER_ID in manifest["skipped"], manifest["skipped"]
 
 
+def _check_source_problems(tmp: Path) -> None:
+    """A defective source EPUB is reported in the manifest but doesn't stop the run."""
+    fixture = tmp / "defective.epub"
+    chapter = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        "<head><title>One</title></head>"
+        "<body><h1>One</h1><p>Hello there.</p></body></html>"
+    )
+    build_epub(fixture, [
+        {"id": "ch1", "href": "ch1.xhtml", "content": chapter},
+        {
+            "id": "img",
+            "href": "images/pic",
+            "content": b"\x89PNG\r\n\x1a\n" + b"not a real png body",
+            "media_type": "image/png",
+        },
+    ])
+    out_dir = tmp / "defective_out"
+    components = PipelineComponents(
+        translation_engine=FakeTranslationEngine(),
+        editor=ConsistencyEditor(FakeEditorProvider()),
+        glossary_store=GlossaryStore(out_dir / "glossary.db"),
+    )
+    cfg = BookConfig(
+        epub_path=str(fixture),
+        output_dir=str(out_dir),
+        glossary_db=str(out_dir / "glossary.db"),
+    )
+    lines: list[str] = []
+    result = run_book(
+        cfg,
+        resolve_path=_resolve,
+        options=RunOptions(limit_chapters=["ch1"], max_paragraphs=1, batch_size=1),
+        components=components,
+        progress=lines.append,
+    )
+    # The run still finished and wrote its EPUB.
+    assert result.epub_path is not None and result.epub_path.exists()
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    problems = manifest["source_problems"]
+    assert len(problems) == 1, problems
+    assert problems[0]["path"] == "EPUB/images/pic", problems[0]
+    assert "file extension" in problems[0]["message"], problems[0]
+    assert any(
+        line.startswith("Source EPUB check: 1 problem") for line in lines
+    ), lines
+    assert any(line.strip().startswith("- pic:") for line in lines), lines
+
+
 def _check_editor_parser() -> None:
     """A paragraph whose EMOTION line the model dropped is kept, not "missing"."""
     raw = (
@@ -568,6 +620,7 @@ def main() -> None:
         assert manifest["preview"] is True
         assert manifest["paragraphs_translated"] == N_PARAGRAPHS
         assert manifest["paragraphs_total"] == len(source_item4.paragraphs)
+        assert manifest["source_problems"] == [], manifest["source_problems"]
 
         # --- regression: preview with QA, then a full run in the same folder --
         # The preview's checkpoint and QA cache share names with the full run's
@@ -603,6 +656,8 @@ def main() -> None:
 
         # --- editor split-and-retry, and resume across a changed batch_size -
         _check_split_and_resume(tmp)
+        # --- a defective source is reported but the run still completes -----
+        _check_source_problems(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

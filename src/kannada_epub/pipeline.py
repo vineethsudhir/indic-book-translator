@@ -17,6 +17,7 @@ environment.
 from __future__ import annotations
 
 import json
+import posixpath
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from .audiobook_builder import build_audiobook
 from .book_translator import BookTranslator, TranslatedBatch
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
+from .epub_check import check_source_epub
 from .epub_io import Chapter, load_epub_chapters
 from .epub_writer import (
     find_gutenberg_mentions,
@@ -308,6 +310,36 @@ def _run_chapter_qa(
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+def _check_source(
+    epub_path: Path, progress: Callable[[str], None]
+) -> list[dict]:
+    """Report defects in the source EPUB; return them for the run manifest.
+
+    The check must never stop a run: an unexpected failure is reported and
+    treated as no problems. Problems in the source carry over into the output
+    (untouched files are copied byte-for-byte), so users can be told before
+    translating that the translated book will inherit them.
+    """
+    try:
+        problems = check_source_epub(epub_path)
+    except Exception as exc:  # noqa: BLE001 — never let the check stop a run
+        progress(f"Source EPUB check skipped: {exc}")
+        return []
+    if not problems:
+        return []
+    count = len(problems)
+    progress(
+        f"Source EPUB check: {count} problem(s) in the source file itself; "
+        "they will carry over into the translated EPUB"
+    )
+    for problem in problems[:10]:
+        basename = posixpath.basename(problem.path) or epub_path.name
+        progress(f"  - {basename}: {problem.message}")
+    if count > 10:
+        progress(f"  … and {count - 10} more")
+    return [{"path": problem.path, "message": problem.message} for problem in problems]
+
+
 def run_book(
     cfg: BookConfig,
     *,
@@ -339,6 +371,7 @@ def run_book(
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
     chapters = load_epub_chapters(epub_path, exclude_ids=cfg.exclude_ids)
+    source_problems = _check_source(epub_path, progress)
     if limit_chapters:
         wanted = set(limit_chapters)
         chapters = [c for c in chapters if c.id in wanted]
@@ -379,6 +412,7 @@ def run_book(
         "paragraphs_total": 0,
         "chapters": [],
         "skipped": [],
+        "source_problems": source_problems,
     }
     all_batches: list[TranslatedBatch] = []
     all_results: list[QAResult] = []

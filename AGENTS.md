@@ -10,7 +10,8 @@ they don't: invariants that break silently, and how to work here.
 - Tests are plain scripts, not pytest: `.venv/bin/python scripts/test_<name>.py`
   (each prints `...: all assertions passed`).
   - Fast, offline, no models — run these after any change:
-    `test_sentence_split`, `test_epub_io`, `test_epub_writer`, `test_tables`,
+    `test_epub_check`, `test_sentence_split`, `test_epub_io`,
+    `test_epub_writer`, `test_tables`,
     `test_qa`, `test_providers`,
     `test_pipeline`, `test_app`, `test_tts_engine`.
   - Need local models, Ollama or API keys — only run when asked:

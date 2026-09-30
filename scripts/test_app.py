@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import test_pipeline as tp  # noqa: E402  (reused fake engines)
+from epub_fixture import build_epub  # noqa: E402
 
 from kannada_epub.app.paths import secrets_path, settings_path  # noqa: E402
 from kannada_epub.app.runner import BookRun  # noqa: E402
@@ -308,6 +309,40 @@ def test_api() -> None:
         assert uploaded["title"] and uploaded["title"] != EPUB.name
         assert len(uploaded["chapters"]) == 13
         assert all(chapter["title"] for chapter in uploaded["chapters"])
+        assert uploaded["source_problem_count"] == 0, uploaded
+        assert uploaded["source_problems"] == [], uploaded
+
+        # A source EPUB that is defective on its own is reported, not rejected.
+        defective_epub = DATA_DIR / "defective.epub"
+        build_epub(defective_epub, [
+            {
+                "id": "ch1",
+                "href": "ch1.xhtml",
+                "content": (
+                    '<?xml version="1.0" encoding="utf-8"?>'
+                    '<html xmlns="http://www.w3.org/1999/xhtml">'
+                    "<head><title>One</title></head>"
+                    "<body><h1>One</h1><p>Hello there.</p></body></html>"
+                ),
+            },
+            {
+                "id": "img",
+                "href": "images/pic",
+                "content": b"\x89PNG\r\n\x1a\n" + b"not a real png body",
+                "media_type": "image/png",
+            },
+        ])
+        with defective_epub.open("rb") as source:
+            defective_response = client.post(
+                "/api/books",
+                headers=authed,
+                files={"file": (defective_epub.name, source, "application/epub+zip")},
+            )
+        assert defective_response.status_code == 200, defective_response.text
+        defective = defective_response.json()
+        assert defective["source_problem_count"] >= 1, defective
+        assert defective["source_problems"], defective
+        assert any("pic" in message for message in defective["source_problems"]), defective
 
         missing = client.post("/api/run", headers=authed, json={"book_id": uploaded["book_id"], "qa": False})
         assert missing.status_code == 400

@@ -56,6 +56,10 @@ def build_epub(
     ncx_content: str | None = None,
     include_nav: bool = True,
     version: str = "3.0",
+    mimetype_content: str = "application/epub+zip",
+    mimetype_compressed: bool = False,
+    mimetype_first: bool = True,
+    include_mimetype: bool = True,
 ) -> None:
     """Write an EPUB at ``path`` with ``documents`` plus a non-linear nav.
 
@@ -63,7 +67,9 @@ def build_epub(
     documents, e.g. to reproduce exports that list the same document twice.
     ``ncx_content`` writes an EPUB 2 NCX (``toc.ncx``) and points the spine's
     ``toc`` attribute at it; ``include_nav=False`` omits the EPUB 3 nav
-    entirely, giving an EPUB 2-style book.
+    entirely, giving an EPUB 2-style book. ``mimetype_content``,
+    ``mimetype_compressed`` and ``mimetype_first`` deliberately corrupt the
+    ``mimetype`` entry for the source-check tests.
     """
     manifest: list[str] = []
     spine: list[str] = []
@@ -115,8 +121,12 @@ def build_epub(
 """
     prefix = f"{opf_dir}/" if opf_dir else ""
     first_href = documents[0]["href"] if documents else "nav.xhtml"
+    mimetype_type = (
+        zipfile.ZIP_DEFLATED if mimetype_compressed else zipfile.ZIP_STORED
+    )
     with zipfile.ZipFile(path, "w") as zf:
-        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        if mimetype_first and include_mimetype:
+            zf.writestr("mimetype", mimetype_content, compress_type=mimetype_type)
         zf.writestr(
             "META-INF/container.xml",
             CONTAINER_XML.format(opf_path=f"{prefix}content.opf"),
@@ -138,3 +148,5 @@ def build_epub(
                     doc["content"],
                     compress_type=zipfile.ZIP_DEFLATED,
                 )
+        if not mimetype_first and include_mimetype:
+            zf.writestr("mimetype", mimetype_content, compress_type=mimetype_type)

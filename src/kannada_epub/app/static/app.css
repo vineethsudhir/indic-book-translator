@@ -267,6 +267,27 @@ h3 {
 .book-card .button {
   flex: none;
 }
+.source-warning {
+  margin-top: 12px;
+  padding: 12px 15px;
+  border: 1px solid #e3c98e;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--warning), transparent 92%);
+  font-size: 13px;
+}
+.source-warning p {
+  margin: 0;
+  color: var(--muted);
+}
+.source-warning ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.source-warning .details {
+  margin-top: 8px;
+}
 .option-list {
   display: grid;
   gap: 15px;

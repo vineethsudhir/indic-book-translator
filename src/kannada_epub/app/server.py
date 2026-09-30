@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from ..epub_check import check_source_epub
 from ..epub_io import load_epub_chapters, read_epub_metadata
 from ..pipeline import PipelineComponents, RunOptions, output_file_names
 from .paths import books_dir, outputs_dir
@@ -311,16 +312,30 @@ def create_app(
         except Exception as exc:  # malformed zip/container/metadata
             dest.unlink(missing_ok=True)
             raise HTTPException(400, f"This EPUB could not be read: {exc}") from exc
-        return {
+        try:
+            source_problems = check_source_epub(dest)
+            problem_messages = [
+                f"{Path(problem.path).name or dest.name}: {problem.message}"
+                for problem in source_problems
+            ][:20]
+            problem_count = len(source_problems)
+        except Exception:  # noqa: BLE001 — a check failure must not fail the upload
+            problem_messages = None
+            problem_count = 0
+        response = {
             "book_id": dest.stem,
             "filename": dest.name,
             "title": title,
             "author": author,
+            "source_problem_count": problem_count,
             "chapters": [
                 {"id": c.id, "title": c.title or c.id, "paragraphs": len(c.paragraphs)}
                 for c in chapters
             ],
         }
+        if problem_messages is not None:
+            response["source_problems"] = problem_messages
+        return response
 
     @app.post("/api/run", dependencies=[Depends(require_token)])
     async def start_run(request: Request):

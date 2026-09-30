@@ -137,6 +137,23 @@
         (total, chapter) => total + chapter.paragraphs,
         0,
       );
+      const problemCount = book.source_problem_count || 0;
+      const problemList = Array.isArray(book.source_problems)
+        ? book.source_problems
+        : [];
+      const sourceWarning = problemCount > 0
+        ? `<div class="source-warning">
+            <p>This EPUB has ${problemCount} problem(s) in the file itself.
+              They'll carry over into the translation; they aren't caused by
+              translating.</p>
+            <details class="details">
+              <summary>Show problems</summary>
+              <ul>${problemList
+                .map((problem) => `<li>${escapeHtml(problem)}</li>`)
+                .join("")}</ul>
+            </details>
+          </div>`
+        : "";
       return `<div class="card book-card">
         <div class="book-cover" aria-hidden="true">ಕ</div>
         <div class="book-info">
@@ -145,7 +162,7 @@
             `${paragraphCount} paragraphs</p>
         </div>
         ${button("Change", "quiet", "id=change-book")}
-      </div>`;
+      </div>${sourceWarning}`;
     }
 
     return `<div class="dropzone" id="dropzone" tabindex="0">
