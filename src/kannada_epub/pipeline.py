@@ -39,6 +39,13 @@ from .epub_writer import (
     translations_from_batches,
     write_translated_epub,
 )
+from .epubcheck_runner import (
+    EpubcheckResult,
+    find_epubcheck,
+    inherited_errors,
+    new_errors,
+    run_epubcheck,
+)
 from .glossary import GlossaryStore
 from .providers.factory import build_provider
 from .qa import (
@@ -422,6 +429,50 @@ def _build_cover_text(
     )
 
 
+def _epubcheck_payload(result: EpubcheckResult) -> dict:
+    """The manifest form of one EPUBCheck run."""
+    return {
+        "fatals": result.fatals,
+        "errors": result.errors,
+        "warnings": result.warnings,
+        "messages": list(result.messages),
+    }
+
+
+def _check_epubcheck(
+    output_path: Path,
+    source_path: Path,
+    progress: Callable[[str], None],
+) -> dict | None:
+    """Validate the output and the source with EPUBCheck; return the manifest value.
+
+    Running both lets inherited source errors be told apart from new ones. This
+    must never fail the book: a missing install returns ``None``, and any run
+    error or timeout is recorded as ``{"error": ...}``.
+    """
+    if find_epubcheck() is None:
+        progress("EPUBCheck not installed; skipped")
+        return None
+    try:
+        output_result = run_epubcheck(output_path)
+        source_result = run_epubcheck(source_path)
+    except Exception as exc:  # noqa: BLE001 — never let the check stop a run
+        progress(f"EPUBCheck skipped: {exc}")
+        return {"error": str(exc)}
+    output_errors = output_result.fatals + output_result.errors
+    inherited = inherited_errors(output_result, source_result)
+    progress(
+        f"EPUBCheck: {output_errors} errors, {output_result.warnings} warnings in "
+        f"the translated EPUB ({inherited} of the errors are also in the source)"
+    )
+    return {
+        "version": output_result.version or source_result.version,
+        "output": _epubcheck_payload(output_result),
+        "source": _epubcheck_payload(source_result),
+        "new_errors": new_errors(output_result, source_result),
+    }
+
+
 def run_book(
     cfg: BookConfig,
     *,
@@ -667,6 +718,16 @@ def run_book(
                     encoding="utf-8",
                 )
         progress(f"Wrote translated EPUB: {epub_out_path}")
+
+        # Optional real-validator check on the finished output (and the source,
+        # so inherited defects can be told apart from new ones). Never a preview.
+        if cfg.epubcheck and not is_preview:
+            manifest["epubcheck"] = _check_epubcheck(epub_out_path, epub_path, progress)
+        else:
+            manifest["epubcheck"] = None
+        (output_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     audiobook_path: Path | None = None
     if options.build_audiobook and components.tts is not None:

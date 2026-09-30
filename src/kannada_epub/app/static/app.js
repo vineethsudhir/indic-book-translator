@@ -758,6 +758,39 @@
     </div>`;
   }
 
+  // Manifest "epubcheck" summary: nothing when the check never ran.
+  function epubcheckMarkup(epubcheck) {
+    if (!epubcheck) return "";
+    const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+    if (epubcheck.error) {
+      return `<p class="epubcheck-note muted">EPUBCheck could not run: ` +
+        `${escapeHtml(epubcheck.error)}</p>`;
+    }
+    const output = epubcheck.output || {};
+    const errors = (output.fatals || 0) + (output.errors || 0);
+    const newErrors = epubcheck.new_errors || 0;
+    let summary;
+    if (errors === 0) {
+      summary = "EPUBCheck: passed (0 errors)";
+    } else if (newErrors === 0) {
+      summary = `EPUBCheck: ${plural(errors, "error")} ` +
+        `(all also in the source file)`;
+    } else {
+      summary = `EPUBCheck: ${plural(newErrors, "new error")}`;
+    }
+    const messages = Array.isArray(output.messages) ? output.messages : [];
+    const details = messages.length
+      ? `<details class="details">
+          <summary>Show EPUBCheck messages</summary>
+          <ul>${messages.map(message => `<li>${escapeHtml(message)}</li>`).join("")}</ul>
+        </details>`
+      : "";
+    return `<div class="epubcheck-note">
+      <p>${escapeHtml(summary)}</p>
+      ${details}
+    </div>`;
+  }
+
   function connectRunControls(run) {
     const startButton = document.getElementById("start-run");
     if (run.state === "running") {
@@ -1221,6 +1254,7 @@
       <a href="#/library">← Back to Library</a>
       ${summary}
     </div>
+    ${epubcheckMarkup(book?.epubcheck)}
     ${flaggedOnly
       ? `<div class="inline-message">Showing chapters with paragraphs marked
           retry or review.</div>`
@@ -1416,7 +1450,7 @@
       ${editingSettingsCard(settings, editorChoice, local)}
       ${audiobookSettingsCard(settings, voiceChoice, local)}
       ${qualitySettingsCard(settings, embeddingChoice, local)}
-      ${advancedSettingsCard(settings)}
+      ${advancedSettingsCard(settings, state)}
       ${apiKeysCard(state.key_status)}
       ${localModeCard(local)}
       <div class="actions">
@@ -1510,7 +1544,13 @@
     </section>`;
   }
 
-  function advancedSettingsCard(settings) {
+  function advancedSettingsCard(settings, state) {
+    const epubcheck = state?.epubcheck || {};
+    const epubcheckStatus = epubcheck.available
+      ? `<p class="muted">EPUBCheck is installed` +
+        `${epubcheck.jar ? ` (${escapeHtml(epubcheck.jar)})` : ""}.</p>`
+      : `<p class="muted">EPUBCheck isn't installed. ` +
+        `${escapeHtml(epubcheck.how_to || "")}</p>`;
     return `<section class="card settings-card">
       <h2>Advanced</h2>
       <p class="section-intro">Fine-tune paragraph grouping, skipped sections,
@@ -1523,6 +1563,16 @@
           <small>Recommended before sharing a translation of a Gutenberg book.</small>
         </span>
       </label>
+      <label class="toggle-row">
+        <input class="switch" type="checkbox" id="epubcheck-enabled"
+          ${settings.epubcheck ? "checked" : ""}>
+        <span class="toggle-copy">
+          <strong>Check the translated EPUB with EPUBCheck when it's installed</strong>
+          <small>EPUBCheck validates the finished EPUB and reports errors in the
+            Library.</small>
+        </span>
+      </label>
+      ${epubcheckStatus}
       <div class="advanced-grid">
         ${textField("batch-size", "Batch size", settings.batch_size, "number")}
         ${textField("register", "Writing style", settings.tone_register)}
@@ -1754,6 +1804,7 @@
       tone_register: fieldValue("register"),
       exclude_ids: fieldValue("exclude").split(",").map(value => value.trim()).filter(Boolean),
       strip_gutenberg: document.getElementById("strip-gutenberg").checked,
+      epubcheck: document.getElementById("epubcheck-enabled").checked,
     };
 
     if (embeddingChoice === "ollama") {

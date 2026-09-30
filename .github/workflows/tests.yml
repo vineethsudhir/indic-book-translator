@@ -26,6 +26,7 @@ jobs:
         run: |
           python scripts/test_epub_check.py
           python scripts/test_importer.py
+          python scripts/test_epubcheck_runner.py
           python scripts/test_edition_check.py
           python scripts/test_sentence_split.py
           python scripts/test_epub_io.py

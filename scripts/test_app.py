@@ -115,6 +115,7 @@ def test_settings() -> None:
     assert defaults.tone_register == "neutral, standard written Kannada"
     assert defaults.exclude_ids == ["coverpage-wrapper"]
     assert defaults.strip_gutenberg is False
+    assert defaults.epubcheck is True
 
     changed = defaults.model_copy(update={"batch_size": 7, "tone_register": "formal Kannada"})
     save_settings(changed)
@@ -135,11 +136,13 @@ def test_settings() -> None:
     assert custom.exclude_ids == ["custom-section"]
 
     changed = changed.model_copy(
-        update={"exclude_ids": ["custom-section"], "strip_gutenberg": True}
+        update={"exclude_ids": ["custom-section"], "strip_gutenberg": True,
+                "epubcheck": False}
     )
     save_settings(changed)
     reloaded = load_settings()
     assert reloaded.strip_gutenberg is True
+    assert reloaded.epubcheck is False
 
     cfg, out_dir = book_config_for(EPUB, reloaded)
     assert isinstance(cfg, BookConfig)
@@ -151,6 +154,7 @@ def test_settings() -> None:
     assert cfg.translation == reloaded.translation
     assert cfg.exclude_ids == ["custom-section"]
     assert cfg.strip_gutenberg is True
+    assert cfg.epubcheck is False
 
     provider_cfg = load_provider_config(cfg.provider_config)
     assert provider_cfg.provider == reloaded.editor.provider
@@ -279,6 +283,24 @@ def test_api() -> None:
         state_response = client.get("/api/state", headers=authed)
         assert state_response.status_code == 200, state_response.text
 
+        state = state_response.json()
+        assert "epubcheck" in state, state
+        assert isinstance(state["epubcheck"]["available"], bool), state["epubcheck"]
+        assert "how_to" in state["epubcheck"], state["epubcheck"]
+        assert isinstance(state["settings"]["epubcheck"], bool), state["settings"]
+
+        # The EPUBCheck setting round-trips through PUT /api/settings.
+        current = load_settings().model_dump(mode="json")
+        flipped = {**current, "epubcheck": not current["epubcheck"]}
+        saved = client.put("/api/settings", headers=authed, json=flipped)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["settings"]["epubcheck"] == flipped["epubcheck"]
+        assert (
+            client.get("/api/settings", headers=authed).json()["epubcheck"]
+            == flipped["epubcheck"]
+        )
+        client.put("/api/settings", headers=authed, json=current)
+
         page = client.get("/", headers=headers)
         assert page.status_code == 200
         assert token in page.text and "__APP_TOKEN__" not in page.text
@@ -405,6 +427,7 @@ def test_api() -> None:
         library = client.get("/api/library", headers=authed)
         assert library.status_code == 200
         assert any(item["book_id"] == uploaded["book_id"] for item in library.json())
+        assert all("epubcheck" in item for item in library.json()), library.json()
         chapters = client.get(f"/api/library/{uploaded['book_id']}/chapters", headers=authed).json()
         assert len(chapters) == 13
         chapter_ids = [item["id"] for item in chapters]

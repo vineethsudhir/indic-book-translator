@@ -427,6 +427,14 @@ label.field-label {
   color: var(--muted);
   font-size: 13px;
 }
+.epubcheck-note {
+  margin: 10px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.epubcheck-note p {
+  margin: 0 0 6px;
+}
 .inline-message {
   padding: 13px 15px;
   border: 1px solid #e3c98e;

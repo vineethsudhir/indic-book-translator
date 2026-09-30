@@ -67,6 +67,7 @@ class BookConfig(BaseModel):
     tone_register: str = "neutral, standard written Kannada"
     exclude_ids: list[str] = ["coverpage-wrapper"]
     strip_gutenberg: bool = False
+    epubcheck: bool = False
     limit_chapters: list[str] | None = None
     max_paragraphs_per_chapter: int | None = None
     translation: TranslationModelConfig = TranslationModelConfig()

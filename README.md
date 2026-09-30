@@ -179,8 +179,10 @@ source EPUB.
 The EPUB writer edits the source archive directly: untouched entries are
 copied byte-for-byte; `mimetype` remains first and uncompressed; and the writer
 adds Noto Sans Kannada regular/bold fonts, the font license, and Kannada CSS.
-Translations are inserted by stable paragraph indices. EPUBCheck 5 can be used
-for separate validation; it is not integrated into the app.
+Translations are inserted by stable paragraph indices. To run EPUBCheck 5
+automatically, put `epubcheck.jar` (from the W3C EPUBCheck releases) in the
+app's data folder under `epubcheck/` and install Java, then leave the check on
+in **Settings → Advanced**.
 
 Tables are translated cell by cell. Table structure and attributes are retained
 by replacing the text in the source cells; CSS rules in the output help fit

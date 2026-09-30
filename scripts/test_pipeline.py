@@ -19,6 +19,7 @@ import sys
 import tempfile
 import threading
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -28,6 +29,7 @@ import lxml.etree as ET
 from bs4 import BeautifulSoup
 from epub_fixture import build_epub
 
+from kannada_epub import pipeline as pipeline_module
 from kannada_epub.book_translator import BookTranslator
 from kannada_epub.config import BookConfig
 from kannada_epub.consistency_editor import (
@@ -37,6 +39,7 @@ from kannada_epub.consistency_editor import (
 )
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.epub_writer import find_gutenberg_cover
+from kannada_epub.epubcheck_runner import EpubcheckResult
 from kannada_epub.glossary import GlossaryStore
 from kannada_epub.pipeline import PipelineComponents, RunOptions, run_book
 from kannada_epub.providers.base import OutputTruncatedError
@@ -597,6 +600,150 @@ def _check_cover(tmp: Path) -> None:
     assert manifest_bad["cover_replaced"] is True, manifest_bad.get("cover_replaced")
 
 
+@contextmanager
+def _patch_module(module, **attributes):
+    """Temporarily replace module attributes, restoring them afterwards."""
+    saved = {name: getattr(module, name) for name in attributes}
+    for name, value in attributes.items():
+        setattr(module, name, value)
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(module, name, value)
+
+
+def _check_epubcheck(tmp: Path) -> None:
+    """Optional EPUBCheck wiring: available, unavailable, failure and preview."""
+    output_result = EpubcheckResult(
+        0,
+        2,
+        1,
+        [
+            "ERROR(RSC-005): EPUB/ch1.xhtml(1,7): boom",
+            "ERROR(RSC-005): EPUB/ch1.xhtml(9,9): a new problem",
+        ],
+        "5.1.0",
+    )
+    source_result = EpubcheckResult(
+        0,
+        1,
+        0,
+        ["ERROR(RSC-005): EPUB/ch1.xhtml(3,4): boom"],
+        "5.1.0",
+    )
+
+    # --- available: output and source are both validated -----------------
+    available_dir = tmp / "epubcheck_available"
+    available_calls: list[str] = []
+
+    def fake_run(path, *, timeout=180):
+        available_calls.append(str(path))
+        return output_result if str(path).endswith(".kn.epub") else source_result
+
+    cfg = _make_cfg(available_dir).model_copy(update={"epubcheck": True})
+    lines: list[str] = []
+    with _patch_module(
+        pipeline_module,
+        find_epubcheck=lambda: ("java", Path("epubcheck.jar")),
+        run_epubcheck=fake_run,
+    ):
+        result = run_book(
+            cfg,
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=[CHAPTER_ID]),
+            components=_make_components(available_dir)[0],
+            progress=lines.append,
+        )
+    assert result.epub_path is not None and result.epub_path.exists()
+    assert len(available_calls) == 2, available_calls
+    assert available_calls[0].endswith(".kn.epub"), available_calls
+    assert available_calls[1].endswith("sherlock_holmes.epub"), available_calls
+    manifest = json.loads((available_dir / "manifest.json").read_text(encoding="utf-8"))
+    block = manifest["epubcheck"]
+    assert block["version"] == "5.1.0", block
+    assert block["output"] == {
+        "fatals": 0, "errors": 2, "warnings": 1,
+        "messages": output_result.messages,
+    }, block
+    assert block["source"]["errors"] == 1, block
+    assert block["new_errors"] == 1, block
+    assert any(
+        line == "EPUBCheck: 2 errors, 1 warnings in the translated EPUB "
+        "(1 of the errors are also in the source)"
+        for line in lines
+    ), lines
+
+    # --- unavailable: null in the manifest and a skip line ----------------
+    missing_dir = tmp / "epubcheck_missing"
+    cfg = _make_cfg(missing_dir).model_copy(update={"epubcheck": True})
+    lines = []
+    with _patch_module(pipeline_module, find_epubcheck=lambda: None):
+        result = run_book(
+            cfg,
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=[CHAPTER_ID]),
+            components=_make_components(missing_dir)[0],
+            progress=lines.append,
+        )
+    assert result.epub_path is not None and result.epub_path.exists()
+    manifest = json.loads((missing_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["epubcheck"] is None, manifest.get("epubcheck")
+    assert "EPUBCheck not installed; skipped" in lines, lines
+
+    # --- a raising validator does not fail the book -----------------------
+    failing_dir = tmp / "epubcheck_failing"
+
+    def exploding_run(path, *, timeout=180):
+        raise RuntimeError("validator exploded")
+
+    cfg = _make_cfg(failing_dir).model_copy(update={"epubcheck": True})
+    lines = []
+    with _patch_module(
+        pipeline_module,
+        find_epubcheck=lambda: ("java", Path("epubcheck.jar")),
+        run_epubcheck=exploding_run,
+    ):
+        result = run_book(
+            cfg,
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=[CHAPTER_ID]),
+            components=_make_components(failing_dir)[0],
+            progress=lines.append,
+        )
+    assert result.epub_path is not None and result.epub_path.exists()
+    manifest = json.loads((failing_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["epubcheck"] == {"error": "validator exploded"}, manifest["epubcheck"]
+    assert any("validator exploded" in line for line in lines), lines
+
+    # --- a preview does not run it at all ---------------------------------
+    preview_dir = tmp / "epubcheck_preview"
+    preview_calls = 0
+
+    def counting_run(path, *, timeout=180):
+        nonlocal preview_calls
+        preview_calls += 1
+        return output_result
+
+    cfg = _make_cfg(preview_dir).model_copy(update={"epubcheck": True})
+    with _patch_module(
+        pipeline_module,
+        find_epubcheck=lambda: ("java", Path("epubcheck.jar")),
+        run_epubcheck=counting_run,
+    ):
+        result = run_book(
+            cfg,
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=[CHAPTER_ID], max_paragraphs=2),
+            components=_make_components(preview_dir)[0],
+            progress=lambda _msg: None,
+        )
+    assert result.epub_path is not None
+    assert preview_calls == 0, preview_calls
+    manifest = json.loads((preview_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["epubcheck"] is None, manifest.get("epubcheck")
+
+
 def _check_editor_parser() -> None:
     """A paragraph whose EMOTION line the model dropped is kept, not "missing"."""
     raw = (
@@ -779,6 +926,8 @@ def main() -> None:
         _check_source_problems(tmp)
         # --- a generated Gutenberg cover is replaced, not misaligned --------
         _check_cover(tmp)
+        # --- optional EPUBCheck wiring --------------------------------------
+        _check_epubcheck(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

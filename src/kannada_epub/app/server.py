@@ -32,6 +32,7 @@ from .runner import BookRun
 from .settings import (
     KNOWN_KEYS,
     AppSettings,
+    epubcheck_status,
     load_secrets_into_env,
     load_settings,
     local_mode_status,
@@ -458,6 +459,7 @@ def create_app(
             "settings": load_settings().model_dump(mode="json"),
             "key_status": secret_status(),
             "local_mode": local_mode_status(),
+            "epubcheck": epubcheck_status(),
             "run": _run_status(app),
         }
 
@@ -711,6 +713,7 @@ def create_app(
                 "paragraphs_translated": outputs["paragraphs_translated"],
                 "paragraphs_total": outputs["paragraphs_total"],
                 "qa_summary": _qa_summary(folder),
+                "epubcheck": manifest.get("epubcheck"),
             })
         entries.sort(key=lambda item: item["_mtime"], reverse=True)
         for item in entries:

@@ -24,6 +24,7 @@ from ..config import (
     TranslationModelConfig,
     TTSModelConfig,
 )
+from ..epubcheck_runner import find_epubcheck
 from .paths import (
     editor_config_path,
     glossary_db_path,
@@ -92,6 +93,8 @@ class AppSettings(BaseModel):
         default_factory=lambda: ["coverpage-wrapper"]
     )
     strip_gutenberg: bool = False
+    # Validate the translated EPUB with EPUBCheck when it's installed.
+    epubcheck: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +233,7 @@ def book_config_for(epub_path: str | Path, settings: AppSettings) -> tuple[BookC
         tone_register=settings.tone_register,
         exclude_ids=list(settings.exclude_ids),
         strip_gutenberg=settings.strip_gutenberg,
+        epubcheck=settings.epubcheck,
         translation=settings.translation,
         tts=settings.tts,
         qa=settings.qa,
@@ -249,3 +253,22 @@ def local_mode_status() -> dict[str, bool]:
         except (ImportError, ModuleNotFoundError, ValueError):
             status[name] = False
     return status
+
+
+# ---------------------------------------------------------------------------
+# Optional EPUBCheck
+# ---------------------------------------------------------------------------
+def epubcheck_status() -> dict:
+    """Whether the EPUBCheck validator can run, for ``GET /api/state``.
+
+    Only the jar's file name is exposed, never the user's home path.
+    """
+    found = find_epubcheck()
+    return {
+        "available": found is not None,
+        "jar": found[1].name if found is not None else None,
+        "how_to": (
+            "Put epubcheck.jar (from the W3C EPUBCheck releases) in "
+            "<data directory>/epubcheck/ and install Java."
+        ),
+    }
