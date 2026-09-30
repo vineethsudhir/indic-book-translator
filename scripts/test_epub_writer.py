@@ -22,6 +22,8 @@ from epub_fixture import build_epub
 from kannada_epub.epub_io import BLOCK_TAGS, load_epub_chapters
 from kannada_epub.epub_writer import (
     MACHINE_TRANSLATION_CONTRIBUTOR,
+    _serialize_xhtml,
+    _translate_document,
     find_gutenberg_mentions,
     translations_from_batches,
     write_translated_epub,
@@ -60,6 +62,125 @@ def _chapter_indices(path, **kwargs) -> list[tuple[str, list[int]]]:
         (chapter.id, [p.index for p in chapter.paragraphs])
         for chapter in load_epub_chapters(path, **kwargs)
     ]
+
+
+def _legacy_translate_document(
+    content: bytes, translations_by_index: dict[int, str], css_href: str
+) -> bytes:
+    """The pre-FR-1.3 plain replacement path, for the byte-identical check."""
+    soup = BeautifulSoup(content, "lxml")
+    blocks = soup.find_all(BLOCK_TAGS)
+    for index, text in sorted(translations_by_index.items()):
+        element = blocks[index]
+        preserved = [
+            soup.new_tag(desc.name, attrs=dict(desc.attrs))
+            for desc in element.find_all(attrs={"id": True})
+        ]
+        element.clear()
+        for anchor in preserved:
+            element.append(anchor)
+        element.append(text)
+    if soup.html is not None:
+        soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
+        soup.html["lang"] = "kn"
+        soup.html["xml:lang"] = "kn"
+    if soup.head is not None:
+        soup.head.append(
+            soup.new_tag("link", rel="stylesheet", type="text/css", href=css_href)
+        )
+    return _serialize_xhtml(content, soup)
+
+
+def _check_inline_markup(tmpdir: Path) -> None:
+    """FR-1.3: rebuild inline tags from markers, degrade safely otherwise."""
+    content = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title></head>'
+        "<body>"
+        '<p>He read <i>The <b>Times</b></i> and a '
+        '<a href="#fn1" id="r1">note</a>.</p>'
+        "<p>Plain paragraph.</p>"
+        "</body></html>"
+    ).encode("utf-8")
+    source = tmpdir / "markup.epub"
+    build_epub(source, [{"id": "c1", "href": "c1.xhtml", "content": content.decode()}])
+    chapter = load_epub_chapters(source)[0]
+    marked, plain = chapter.paragraphs
+    assert marked.marked_text
+
+    def doc_bytes(out: Path) -> bytes:
+        with zipfile.ZipFile(out) as zf:
+            return zf.read("EPUB/c1.xhtml")
+
+    def block_of(data: bytes):
+        return BeautifulSoup(data, "lxml").find_all(BLOCK_TAGS)[marked.index]
+
+    # --- no markers: byte-identical to the old plain replacement ------------
+    assert _translate_document(
+        content, {marked.index: "ಸರಳ ಪಠ್ಯ.", plain.index: "ಇನ್ನೊಂದು."}, "css/kannada.css"
+    ) == _legacy_translate_document(
+        content, {marked.index: "ಸರಳ ಪಠ್ಯ.", plain.index: "ಇನ್ನೊಂದು."}, "css/kannada.css"
+    )
+
+    # --- valid marked translation: tags, attributes, nesting, id kept -------
+    valid = (
+        marked.marked_text.replace("The", "ದಿ")
+        .replace("Times", "ಟೈಮ್ಸ್")
+        .replace("note", "ಟಿಪ್ಪಣಿ")
+    )
+    valid_out = tmpdir / "valid.kn.epub"
+    write_translated_epub(
+        source, {"c1": {marked.index: valid, plain.index: "ಸರಳ."}}, valid_out
+    )
+    valid_data = doc_bytes(valid_out)
+    valid_block = block_of(valid_data)
+    assert [tag.name for tag in valid_block.find_all(["i", "b", "a"])] == [
+        "i",
+        "b",
+        "a",
+    ], valid_block
+    assert valid_block.find("i").find("b") is not None, valid_block
+    anchor = valid_block.find("a")
+    assert anchor is not None and anchor.get("href") == "#fn1"
+    assert anchor.get("id") == "r1"
+    assert valid_block.get_text() == "He read ದಿ ಟೈಮ್ಸ್ and a ಟಿಪ್ಪಣಿ.", valid_block
+    ids = [
+        tag.get("id")
+        for tag in BeautifulSoup(valid_data, "lxml").find_all(attrs={"id": True})
+    ]
+    assert ids.count("r1") == 1, ids  # rebuilt, not also preserved empty
+
+    # --- malformed markers: plain text, no marker characters ----------------
+    malformed_out = tmpdir / "malformed.kn.epub"
+    write_translated_epub(
+        source,
+        {"c1": {marked.index: "⟦9⟧ಮೋಸ⟦/9⟧ ಪಠ್ಯ", plain.index: "ಸರಳ."}},
+        malformed_out,
+    )
+    malformed_data = doc_bytes(malformed_out)
+    malformed_block = block_of(malformed_data)
+    assert malformed_block.get_text() == "ಮೋಸ ಪಠ್ಯ", malformed_block
+    # The id anchor survives as an empty copy, exactly as before.
+    assert malformed_block.find(["i", "b"]) is None, malformed_block
+    assert malformed_block.find("a").get_text() == "", malformed_block
+    assert "⟦" not in malformed_data.decode() and "⟧" not in malformed_data.decode()
+
+    # --- one missing span: the others are still rebuilt ---------------------
+    missing = valid.replace("⟦2⟧", "").replace("⟦/2⟧", "")
+    missing_out = tmpdir / "missing.kn.epub"
+    write_translated_epub(
+        source, {"c1": {marked.index: missing, plain.index: "ಸರಳ."}}, missing_out
+    )
+    missing_data = doc_bytes(missing_out)
+    missing_block = block_of(missing_data)
+    assert missing_block.find("i") is not None, missing_block
+    assert missing_block.find("b") is None, missing_block
+    assert missing_block.find("a") is not None, missing_block
+    missing_ids = [
+        tag.get("id")
+        for tag in BeautifulSoup(missing_data, "lxml").find_all(attrs={"id": True})
+    ]
+    assert missing_ids.count("r1") == 1, missing_ids
 
 
 def main() -> None:
@@ -379,6 +500,9 @@ def main() -> None:
             encoded_output,
         )
         assert load_epub_chapters(encoded_output)[0].paragraphs[0].text == "ನಮಸ್ಕಾರ"
+
+        # --- FR-1.3: inline markup rebuild --------------------------------
+        _check_inline_markup(tmpdir)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

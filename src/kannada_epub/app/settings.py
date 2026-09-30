@@ -94,6 +94,9 @@ class AppSettings(BaseModel):
         default_factory=lambda: ["coverpage-wrapper"]
     )
     strip_gutenberg: bool = False
+    # FR-1.3: preserve bold/italic/link markup inside translated paragraphs.
+    # Experimental; off by default until marker tokens are measured for quality.
+    preserve_inline_markup: bool = False
     # Validate the translated EPUB with EPUBCheck when it's installed.
     epubcheck: bool = True
     # "auto" detects continuous novels from the chapter titles; "carry"/"reset"
@@ -238,6 +241,7 @@ def book_config_for(epub_path: str | Path, settings: AppSettings) -> tuple[BookC
         exclude_ids=list(settings.exclude_ids),
         strip_gutenberg=settings.strip_gutenberg,
         epubcheck=settings.epubcheck,
+        preserve_inline_markup=settings.preserve_inline_markup,
         chapter_context=settings.chapter_context,
         translation=settings.translation,
         tts=settings.tts,

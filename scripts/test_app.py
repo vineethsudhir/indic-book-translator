@@ -117,6 +117,7 @@ def test_settings() -> None:
     assert defaults.strip_gutenberg is False
     assert defaults.epubcheck is True
     assert defaults.chapter_context == "auto"
+    assert defaults.preserve_inline_markup is False
 
     changed = defaults.model_copy(update={"batch_size": 7, "tone_register": "formal Kannada"})
     save_settings(changed)
@@ -142,6 +143,7 @@ def test_settings() -> None:
             "strip_gutenberg": True,
             "epubcheck": False,
             "chapter_context": "carry",
+            "preserve_inline_markup": True,
         }
     )
     save_settings(changed)
@@ -149,6 +151,7 @@ def test_settings() -> None:
     assert reloaded.strip_gutenberg is True
     assert reloaded.epubcheck is False
     assert reloaded.chapter_context == "carry"
+    assert reloaded.preserve_inline_markup is True
 
     cfg, out_dir = book_config_for(EPUB, reloaded)
     assert isinstance(cfg, BookConfig)
@@ -162,6 +165,7 @@ def test_settings() -> None:
     assert cfg.strip_gutenberg is True
     assert cfg.epubcheck is False
     assert cfg.chapter_context == "carry"
+    assert cfg.preserve_inline_markup is True
 
     provider_cfg = load_provider_config(cfg.provider_config)
     assert provider_cfg.provider == reloaded.editor.provider

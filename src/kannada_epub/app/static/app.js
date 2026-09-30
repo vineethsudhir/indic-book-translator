@@ -1806,6 +1806,15 @@
             Library.</small>
         </span>
       </label>
+      <label class="toggle-row">
+        <input class="switch" type="checkbox" id="preserve-inline-markup"
+          ${settings.preserve_inline_markup ? "checked" : ""}>
+        <span class="toggle-copy">
+          <strong>Keep bold, italics and links (experimental)</strong>
+          <small>Rebuild inline formatting in the translated book. It may lower
+            translation quality with some engines.</small>
+        </span>
+      </label>
       ${epubcheckStatus}
       <div class="field">
         <span class="field-label">Chapters are…</span>
@@ -2051,6 +2060,7 @@
       tone_register: fieldValue("register"),
       exclude_ids: fieldValue("exclude").split(",").map(value => value.trim()).filter(Boolean),
       strip_gutenberg: document.getElementById("strip-gutenberg").checked,
+      preserve_inline_markup: document.getElementById("preserve-inline-markup").checked,
       epubcheck: document.getElementById("epubcheck-enabled").checked,
       chapter_context: currentChoice("chapter-context", old.chapter_context || "auto"),
     };

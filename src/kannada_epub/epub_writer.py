@@ -11,11 +11,13 @@ source archive byte-for-byte: CSS, images, the nav/NCX, every other document,
 and every element attribute and ``id``. Only the documents with translations
 and the OPF are rewritten, plus an embedded Kannada font and stylesheet.
 
-Known prototype limitation: inline markup inside a *translated* paragraph
-(``i``, ``strong``, ``span``, ``br``, …) is dropped when the Kannada text
-replaces the element's contents. Descendants that carry an ``id`` (typically
-empty ``<a>`` anchors that the TOC links to) are preserved, emptied of text,
-so navigation keeps working.
+Inline markup inside a *translated* paragraph is preserved when the incoming
+translation carries the reader's ``⟦n⟧ … ⟦/n⟧`` markers (see
+:mod:`kannada_epub.inline_markup`): the original tags and attributes are rebuilt
+around the translated segments. A translation without markers — including one
+from a run with markup preservation off — is written as plain text, as before.
+Descendants that carry an ``id`` (typically empty ``<a>`` anchors that the TOC
+links to) are preserved, emptied of text, so navigation keeps working.
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ from .cover import (
     is_translator_generated_cover,
     render_cover,
 )
-from .epub_io import BLOCK_TAGS, Chapter, find_opf_path
+from .epub_io import BLOCK_TAGS, Chapter, _marked_elements, find_opf_path
+from .inline_markup import MARKER_RE, MarkerSpan, parse_markers, strip_markers
 
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -237,6 +240,77 @@ def _serialize_xhtml(original: bytes, soup: BeautifulSoup) -> bytes:
     return ("\n".join(parts) + "\n").encode("utf-8")
 
 
+def _used_marker_ids(segments: list) -> set[int]:
+    """Every marker id that appears in a parsed :func:`parse_markers` tree."""
+    used: set[int] = set()
+    stack = list(segments)
+    while stack:
+        segment = stack.pop()
+        if isinstance(segment, MarkerSpan):
+            used.add(segment.marker_id)
+            stack.extend(segment.children)
+    return used
+
+
+def _build_marked_nodes(soup, segments: list, marked: list) -> list:
+    """Rebuild parsed segments as nodes, reusing the source tags' names/attrs."""
+    nodes: list = []
+    for segment in segments:
+        if isinstance(segment, str):
+            nodes.append(segment)
+            continue
+        source = marked[segment.marker_id - 1]
+        element = soup.new_tag(source.name, attrs=dict(source.attrs))
+        for child in _build_marked_nodes(soup, segment.children, marked):
+            element.append(child)
+        nodes.append(element)
+    return nodes
+
+
+def _replace_block(soup, element, text: str) -> None:
+    """Replace a translated block's contents, preserving inline markup.
+
+    If ``text`` carries ``⟦n⟧``/``⟦/n⟧`` markers that parse against the block's
+    own marked elements, the original tags (with their attributes, including
+    ``id``/``href``) are rebuilt around the translated segments and nested as in
+    the source. Otherwise the markers are stripped and the plain text is used,
+    exactly as before.
+
+    ID-bearing descendants rebuilt this way keep their ``id`` on the new
+    element, so they are not also added as empty preserved copies; the other
+    ID-bearing descendants are preserved as empty copies so TOC targets live.
+    """
+    has_marker = MARKER_RE.search(text) is not None
+    marked = _marked_elements(element)
+    tree = (
+        parse_markers(text, range(1, len(marked) + 1))
+        if has_marker and marked
+        else None
+    )
+    if tree is not None:
+        rebuilt = {id(marked[n - 1]) for n in _used_marker_ids(tree)}
+        preserved = [
+            soup.new_tag(desc.name, attrs=dict(desc.attrs))
+            for desc in element.find_all(attrs={"id": True})
+            if id(desc) not in rebuilt
+        ]
+        element.clear()
+        for anchor in preserved:
+            element.append(anchor)
+        for node in _build_marked_nodes(soup, tree, marked):
+            element.append(node)
+        return
+
+    preserved = [
+        soup.new_tag(desc.name, attrs=dict(desc.attrs))
+        for desc in element.find_all(attrs={"id": True})
+    ]
+    element.clear()
+    for anchor in preserved:
+        element.append(anchor)
+    element.append(strip_markers(text) if has_marker else text)
+
+
 def _translate_document(
     content: bytes,
     translations_by_index: dict[int, str],
@@ -256,17 +330,7 @@ def _translate_document(
 
     for index, text in sorted(translations_by_index.items()):
         element = _element_at(index)
-
-        # Keep anchors/id-bearing descendants alive (TOC targets), emptied of
-        # text, then replace the rest of the element's contents.
-        preserved = [
-            soup.new_tag(desc.name, attrs=dict(desc.attrs))
-            for desc in element.find_all(attrs={"id": True})
-        ]
-        element.clear()
-        for anchor in preserved:
-            element.append(anchor)
-        element.append(text)
+        _replace_block(soup, element, text)
 
     # QA review flags: append the class so we never clobber an existing one.
     for index in sorted(flagged_indices):

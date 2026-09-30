@@ -13,6 +13,7 @@ they don't: invariants that break silently, and how to work here.
     `test_epub_check`, `test_epubcheck_runner`, `test_edition_check`,
     `test_sentence_split`,
     `test_epub_io`,
+    `test_inline_markup`,
     `test_epub_writer`, `test_tables`, `test_cover`,
     `test_qa`, `test_providers`,
     `test_pipeline`, `test_app`, `test_import_app`, `test_tts_engine`,

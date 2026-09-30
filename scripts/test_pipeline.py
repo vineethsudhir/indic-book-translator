@@ -22,6 +22,8 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -1303,6 +1305,130 @@ def _check_qa_retry(tmp: Path) -> None:
         raise AssertionError("expected RuntimeError for a misaligned retry")
 
 
+class MarkedEngine(FakeTranslationEngine):
+    """Keeps inline markers in the "translation" so stripping can be checked."""
+
+    def __init__(self):
+        super().__init__()
+        self.inputs: list[list[str]] = []
+
+    def translate_paragraphs(self, paragraphs, src_lang, tgt_lang):
+        self.inputs.append(list(paragraphs))
+        self.calls += 1
+        self.batch_sizes.append(len(paragraphs))
+        return [f"ಕ {text}" for text in paragraphs]
+
+
+class RecordingBackTranslator:
+    """Records the Kannada it scores; every paragraph passes."""
+
+    def __init__(self):
+        self.inputs: list[list[str]] = []
+
+    def back_translate(self, kannada: list[str]) -> list[str]:
+        self.inputs.append(list(kannada))
+        return ["q:1.0" for _ in kannada]
+
+
+class RecordingTTS:
+    """Records every paragraph handed to the audiobook builder."""
+
+    sampling_rate = 22050
+
+    def __init__(self):
+        self.texts: list[str] = []
+
+    def synthesize_paragraph(self, text: str, voice: str, emotion: str):
+        self.texts.append(text)
+        return np.zeros(8, dtype=np.float32)
+
+
+def _check_inline_markup_pipeline(tmp: Path) -> None:
+    """FR-1.3: markers reach the engines, are stripped for QA/audio, and plain
+    mode is untouched."""
+    from kannada_epub.consistency_editor import SYSTEM_PROMPT
+
+    fixture = tmp / "markup.epub"
+    chapter_doc = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Markup</title>'
+        "</head><body><h1>Markup</h1>"
+        '<p>He read <i>The <b>Times</b></i> and a '
+        '<a href="#fn1" id="r1">note</a>.</p>'
+        "<p>Second plain paragraph.</p>"
+        "</body></html>"
+    )
+    build_epub(fixture, [{"id": "mk", "href": "mk.xhtml", "content": chapter_doc}])
+    paragraphs = load_epub_chapters(fixture)[0].paragraphs
+    marked_text = next(p.marked_text for p in paragraphs if "He read" in p.text)
+    assert marked_text and "⟦" in marked_text
+
+    def run(out_dir: Path, preserve: bool):
+        engine = MarkedEngine()
+        editor = RecordingEditorProvider(FakeEditorProvider())
+        back = RecordingBackTranslator()
+        tts = RecordingTTS()
+        components = PipelineComponents(
+            translation_engine=engine,
+            editor=ConsistencyEditor(editor),
+            glossary_store=GlossaryStore(out_dir / "glossary.db"),
+            qa=(back, FakeEmbedder()),
+            tts=tts,
+        )
+        cfg = BookConfig(
+            epub_path=str(fixture),
+            output_dir=str(out_dir),
+            glossary_db=str(out_dir / "glossary.db"),
+            preserve_inline_markup=preserve,
+        )
+        run_book(
+            cfg,
+            resolve_path=_resolve,
+            options=RunOptions(limit_chapters=["mk"], build_audiobook=True),
+            components=components,
+            progress=lambda _msg: None,
+        )
+        return engine, editor, back, tts, out_dir
+
+    # --- mode on: markers to the engine/editor, stripped for QA/audio -------
+    on_dir = tmp / "markup_on"
+    engine, editor, back, tts, on_dir = run(on_dir, True)
+    assert any("⟦" in text for text in engine.inputs[0]), engine.inputs
+    assert all("⟦" in prompt for prompt in editor.user_prompts), editor.user_prompts
+    assert "⟦" in editor.system_prompts[0], editor.system_prompts[0]
+
+    checkpoint = json.loads(
+        (on_dir / "checkpoints" / "mk_0000.json").read_text(encoding="utf-8")
+    )
+    assert "He read The Times and a note." in checkpoint["source_english"]
+    assert all("⟦" not in text for text in checkpoint["source_english"])
+
+    assert back.inputs and all(
+        "⟦" not in text for chunk in back.inputs for text in chunk
+    ), back.inputs
+    assert tts.texts and all("⟦" not in text for text in tts.texts), tts.texts
+
+    report = json.loads((on_dir / "qa_report.json").read_text(encoding="utf-8"))
+    assert all("⟦" not in result["kannada_target"] for result in report["results"])
+    manifest = json.loads((on_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["preserve_inline_markup"] is True, manifest.get("preserve_inline_markup")
+
+    reloaded = load_epub_chapters(next(on_dir.glob("*.kn.epub")))[0]
+    from kannada_epub.inline_markup import strip_markers
+
+    target = next(p for p in reloaded.paragraphs if p.text.startswith("ಕ He read"))
+    assert "⟦" not in target.text
+    assert target.text == strip_markers(f"ಕ {marked_text}"), target.text
+
+    # --- mode off: plain text and the unchanged system prompt ---------------
+    off_dir = tmp / "markup_off"
+    engine_off, editor_off, _, _, off_dir = run(off_dir, False)
+    assert all("⟦" not in text for chunk in engine_off.inputs for text in chunk)
+    assert editor_off.system_prompts[0] == SYSTEM_PROMPT
+    manifest_off = json.loads((off_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_off["preserve_inline_markup"] is False
+
+
 def main() -> None:
     source = {c.id: c for c in load_epub_chapters(EPUB)}
     source_item4 = source[CHAPTER_ID]
@@ -1472,6 +1598,8 @@ def main() -> None:
         _check_chapter_context_pipeline(tmp)
         # --- QA retry: varied settings, improved-only, strict count --------
         _check_qa_retry(tmp)
+        # --- FR-1.3 inline markup through the pipeline ---------------------
+        _check_inline_markup_pipeline(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

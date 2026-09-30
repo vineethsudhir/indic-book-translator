@@ -30,6 +30,7 @@ jobs:
           python scripts/test_edition_check.py
           python scripts/test_sentence_split.py
           python scripts/test_epub_io.py
+          python scripts/test_inline_markup.py
           python scripts/test_epub_writer.py
           python scripts/test_tables.py
           python scripts/test_cover.py

@@ -66,6 +66,17 @@ EMOTION: Happy
 <edited paragraph 2 text>"""
 
 
+# Appended to SYSTEM_PROMPT only when the caller preserves inline markup
+# (FR-1.3), so prompts for plain runs stay byte-identical to before.
+INLINE_MARKUP_RULE = """
+
+This chapter was translated from a source with inline formatting. Words that were bold, italic, a \
+link or a footnote reference in the source are wrapped in numbered markers: ⟦1⟧ … ⟦/1⟧, ⟦2⟧ … \
+⟦/2⟧, and so on. Keep every marker pair around the Kannada words that translate the marked English \
+words. Never add, remove or renumber markers, never move a marker onto different words, and never \
+let one marker pair cross another."""
+
+
 @dataclass
 class EditedParagraph:
     emotion: str
@@ -148,12 +159,16 @@ class ConsistencyEditor:
         prior_chapter_context: str = "",
         register: str = "neutral, standard written Kannada",
         heading_numbers: set[int] | None = None,
+        preserve_inline_markup: bool = False,
     ) -> list[EditedParagraph]:
         expected_count = len([p for p in draft_kannada_text.split("\n\n") if p.strip()])
         user_prompt = _build_user_prompt(
             draft_kannada_text, glossary, prior_chapter_context, register, heading_numbers
         )
-        result = self._provider.complete(SYSTEM_PROMPT, user_prompt)
+        system_prompt = SYSTEM_PROMPT + (
+            INLINE_MARKUP_RULE if preserve_inline_markup else ""
+        )
+        result = self._provider.complete(system_prompt, user_prompt)
         if not result.strip():
             raise EditorOutputError(
                 "Consistency editor returned empty output — refusing to overwrite the draft chapter. "

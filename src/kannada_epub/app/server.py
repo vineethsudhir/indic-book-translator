@@ -28,6 +28,7 @@ from ..edition_check import edition_notes, edition_payload
 from ..epub_check import check_source_epub
 from ..epub_io import load_epub_chapters, read_epub_metadata
 from ..importer import build_epub, import_html, import_text
+from ..inline_markup import strip_markers
 from ..pipeline import PipelineComponents, RunOptions, RunResult, output_file_names
 from .book_queue import BookQueue, ItemNotFound, ItemRunning, StateError
 from .paths import books_dir, data_dir, outputs_dir
@@ -964,7 +965,7 @@ def create_app(
                 paragraphs.append({
                     "index": qa.get("paragraph_index", batch.get("paragraph_start", 0) + offset),
                     "en": en,
-                    "kn": kn,
+                    "kn": strip_markers(kn),
                     "emotion": emotions[offset] if offset < len(emotions) else None,
                     "qa_status": qa.get("status"),
                     "qa_score": qa.get("similarity_score"),

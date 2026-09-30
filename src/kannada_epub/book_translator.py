@@ -194,6 +194,7 @@ class BookTranslator:
         batch_size: int = 20,
         context_tail_paragraphs: int = 2,
         register: str = "neutral, standard written Kannada",
+        preserve_inline_markup: bool = False,
     ):
         self._engine = translation_engine
         self._glossary = glossary_store
@@ -201,6 +202,7 @@ class BookTranslator:
         self._batch_size = batch_size
         self._context_tail = context_tail_paragraphs
         self._register = register
+        self._preserve_inline_markup = preserve_inline_markup
 
     def _edit_with_split(
         self,
@@ -231,6 +233,7 @@ class BookTranslator:
                 prior_chapter_context=incoming_context,
                 register=self._register,
                 heading_numbers=_heading_numbers(heading_flags),
+                preserve_inline_markup=self._preserve_inline_markup,
             )
         except _RETRYABLE_EDITOR_ERRORS as exc:
             if len(english_texts) <= 1:
@@ -293,7 +296,14 @@ class BookTranslator:
             paragraphs = chapter.paragraphs
             for start in range(0, len(paragraphs), self._batch_size):
                 batch = paragraphs[start : start + self._batch_size]
-                english_texts = [p.text for p in batch]
+                source_texts = [p.text for p in batch]
+                # With markup preservation on, the engine and the editor see the
+                # marked form; everything else (checkpoints, context, glossary)
+                # stays plain English.
+                if self._preserve_inline_markup:
+                    english_texts = [p.marked_text or p.text for p in batch]
+                else:
+                    english_texts = source_texts
 
                 # Only paragraphs with words go to the engine and the editor;
                 # the rest are copied verbatim and merged back by position.
@@ -302,6 +312,7 @@ class BookTranslator:
                 edited_paragraphs = [EditedParagraph(emotion="Narration", text=text) for text in english_texts]
                 if wanted:
                     wanted_texts = [english_texts[i] for i in wanted]
+                    wanted_source = [source_texts[i] for i in wanted]
                     wanted_heading_flags = [batch[i].kind == "heading" for i in wanted]
                     wanted_draft = self._engine.translate_paragraphs(wanted_texts, "eng_Latn", "kan_Knda")
                     if len(wanted_draft) != len(wanted_texts):
@@ -310,9 +321,9 @@ class BookTranslator:
                             f"{len(wanted_texts)} (chapter {chapter.id!r}, paragraphs "
                             f"[{start}:{start + len(batch)}]) — refusing to misalign."
                         )
-                    relevant_glossary = self._glossary.get_relevant_glossary(" ".join(wanted_texts))
+                    relevant_glossary = self._glossary.get_relevant_glossary(" ".join(wanted_source))
                     wanted_edited = self._edit_with_split(
-                        english_texts=wanted_texts,
+                        english_texts=wanted_source,
                         draft_kn=wanted_draft,
                         glossary=relevant_glossary,
                         incoming_context=rolling_context,
@@ -344,7 +355,7 @@ class BookTranslator:
                         chapter_title=chapter.title,
                         paragraph_start=start,
                         paragraph_end=start + len(batch),
-                        source_english=english_texts,
+                        source_english=source_texts,
                         draft_kannada=draft_kn,
                         edited_kannada=[p.text for p in edited_paragraphs],
                         edited_emotions=[p.emotion for p in edited_paragraphs],

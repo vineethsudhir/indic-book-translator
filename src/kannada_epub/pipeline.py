@@ -53,6 +53,7 @@ from .epubcheck_runner import (
     run_epubcheck,
 )
 from .glossary import GlossaryStore
+from .inline_markup import strip_markers
 from .providers.factory import build_provider
 from .qa import (
     FLAGGED_FOR_REVIEW,
@@ -275,11 +276,14 @@ def _run_chapter_qa(
         progress(f"[{chapter.id}] QA: cache is for different paragraphs; re-checking")
 
     edited = [text for batch in batches for text in batch.edited_kannada]
+    # Kannada text with inline markers is scored and shown without them; the
+    # marked form is kept in ``edited`` for the EPUB writer.
+    qa_targets = [strip_markers(text) for text in edited]
     paragraph_indices = [p.index for p in chapter.paragraphs]
 
     results = evaluate(
         source_english,
-        edited,
+        qa_targets,
         chapter=chapter.id,
         paragraph_indices=paragraph_indices,
         back_translator=back_translator,
@@ -317,7 +321,7 @@ def _run_chapter_qa(
             )
         retried_results = evaluate(
             retry_english,
-            new_drafts,
+            [strip_markers(text) for text in new_drafts],
             chapter=chapter.id,
             paragraph_indices=[paragraph_indices[i] for i in retry_positions],
             back_translator=back_translator,
@@ -588,6 +592,7 @@ def run_book(
         batch_size=batch_size,
         context_tail_paragraphs=cfg.context_tail_paragraphs,
         register=cfg.tone_register,
+        preserve_inline_markup=cfg.preserve_inline_markup,
     )
 
     manifest: dict = {
@@ -595,6 +600,7 @@ def run_book(
         "preview": is_preview,
         "exclude_ids": list(cfg.exclude_ids),
         "chapter_context": chapter_context,
+        "preserve_inline_markup": cfg.preserve_inline_markup,
         "paragraphs_translated": 0,
         "paragraphs_total": 0,
         "chapters": [],

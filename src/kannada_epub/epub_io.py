@@ -7,7 +7,9 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 import lxml.etree as etree
-from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag, XMLParsedAsHTMLWarning
+
+from .inline_markup import strip_markers
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -46,6 +48,24 @@ TABLE_CELL_TAGS = ("td", "th")
 # consistency editor can be told to translate their meaning rather than
 # transliterate them. ``h1``-``h6`` per the HTML/EPUB block set.
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+# Inline elements whose markup FR-1.3 preserves inside a translated paragraph.
+# An element is only marked when it actually contains non-whitespace text; an
+# empty anchor or a purely decorative ``<i>`` carries nothing to preserve.
+INLINE_TAGS = (
+    "i",
+    "em",
+    "b",
+    "strong",
+    "u",
+    "cite",
+    "a",
+    "sup",
+    "sub",
+    "small",
+    "abbr",
+    "q",
+)
 
 # Publisher boilerplate wrappers. Each rule is ``(class_tokens, element_ids)``:
 # a block is boilerplate when it, or any ancestor, carries one of the class
@@ -145,6 +165,55 @@ def _is_wikisource_export(opf: etree._Element) -> bool:
 def _collapse(text: str) -> str:
     """Collapse every run of whitespace into a single space."""
     return " ".join(text.split())
+
+
+def _marked_elements(block) -> list[Tag]:
+    """The inline descendants of ``block`` that carry markup, in document order.
+
+    Only elements whose text is not just whitespace are marked — an empty
+    anchor or a purely decorative ``<i>`` has nothing to preserve. Nested
+    marked elements are returned too, so numbering follows start order. The
+    writer calls this on the same source block to number the spans identically.
+    """
+    return [tag for tag in block.find_all(INLINE_TAGS) if tag.get_text().strip()]
+
+
+def _marked_text(block, text: str) -> str | None:
+    """``text`` with ``⟦n⟧``/``⟦/n⟧`` around every marked inline descendant.
+
+    Numbers are 1-based in start order (``_marked_elements``). Returns ``None``
+    when the block has no marked elements, or when removing every marker would
+    not reproduce ``text`` exactly (odd whitespace): the caller then keeps the
+    plain ``text`` rather than risk a mismatch.
+    """
+    marked = _marked_elements(block)
+    if not marked:
+        return None
+    numbering = {id(tag): number for number, tag in enumerate(marked, start=1)}
+    parts: list[str] = []
+
+    def walk(node) -> None:
+        for child in node.children:
+            if isinstance(child, Tag):
+                number = numbering.get(id(child))
+                if number is None:
+                    walk(child)
+                else:
+                    parts.append(f"⟦{number}⟧")
+                    walk(child)
+                    parts.append(f"⟦/{number}⟧")
+            elif isinstance(child, Comment):
+                # ``get_text()`` skips comments; match it so the markers do not
+                # disagree with the plain text.
+                continue
+            elif isinstance(child, NavigableString):
+                parts.append(str(child))
+
+    walk(block)
+    marked_text = _collapse("".join(parts))
+    if strip_markers(marked_text) != text:
+        return None
+    return marked_text
 
 
 def _truncate_title(title: str) -> str:
@@ -401,6 +470,9 @@ class Paragraph:
     index: int
     text: str
     kind: str = "text"
+    # Inline markup (FR-1.3) as ``⟦n⟧ … ⟦/n⟧`` markers around the marked
+    # descendants, or ``None`` when the block has none. ``text`` never changes.
+    marked_text: str | None = None
 
 
 @dataclass
@@ -506,7 +578,9 @@ def load_epub_chapters(
                 continue
             text = " ".join(tag.get_text().split())
             if len(text) >= min_paragraph_chars:
-                paragraphs.append(Paragraph(i, text, _paragraph_kind(tag)))
+                paragraphs.append(
+                    Paragraph(i, text, _paragraph_kind(tag), _marked_text(tag, text))
+                )
 
         if paragraphs:
             chapters.append(Chapter(id=idref, title=title, paragraphs=paragraphs))

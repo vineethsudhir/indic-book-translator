@@ -5,6 +5,7 @@ import numpy as np
 import soundfile as sf
 
 from .book_translator import TranslatedBatch
+from .inline_markup import strip_markers
 from .tts import TTSProvider
 
 
@@ -28,6 +29,7 @@ def build_audiobook(
     done = 0
     for batch in batches:
         for text, emotion in zip(batch.edited_kannada, batch.edited_emotions, strict=True):
+            text = strip_markers(text)
             done += 1
             progress(f"  narrating [{done}/{total}] ({emotion}) {text[:40]}...")
             if on_narrating is not None:

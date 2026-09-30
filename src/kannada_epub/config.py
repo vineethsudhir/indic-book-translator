@@ -76,6 +76,10 @@ class BookConfig(BaseModel):
     exclude_ids: list[str] = ["coverpage-wrapper"]
     strip_gutenberg: bool = False
     epubcheck: bool = False
+    # FR-1.3: carry inline bold/italic/link markup through translation as
+    # ⟦n⟧ … ⟦/n⟧ markers and rebuild it in the output EPUB. Off by default:
+    # whether marker tokens hurt NMT quality is not measured yet.
+    preserve_inline_markup: bool = False
     # Whether the consistency editor may see the previous chapter's English
     # tail as context. "auto" detects continuous novels from the chapter
     # titles; "carry"/"reset" force the choice. See detect_chapter_context.
