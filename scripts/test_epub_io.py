@@ -127,6 +127,39 @@ def main() -> None:
         assert read_epub_metadata(src) == ("The Title", "An Author")
         assert [c.id for c in load_epub_chapters(src, exclude_ids=["c1"])] == ["c2"]
 
+        # Paragraph kind: h1-h6 blocks (and a block nested inside one) are
+        # "heading"; a <p> inside a heading-less <div> stays "text"; and the
+        # table rule still wins over the heading rule. Classification never
+        # changes which blocks are extracted or their indices, so the index
+        # list is exactly the enumerate() positions of the fixture.
+        kinds = tmpdir / "kinds.epub"
+        build_epub(
+            kinds,
+            [
+                {
+                    "id": "k1",
+                    "href": "k1.xhtml",
+                    "content": _raw_doc(
+                        "<h1>Top</h1><p>Body one.</p><div><p>Body two.</p></div>"
+                        "<h2>Sub</h2><h3>Sub sub</h3><p>Body three.</p>"
+                        "<table><tr><th>Head cell</th><td>Data cell</td></tr></table>"
+                    ),
+                }
+            ],
+        )
+        k1 = load_epub_chapters(kinds)[0]
+        assert [p.index for p in k1.paragraphs] == list(range(8)), k1.paragraphs
+        assert [(p.text, p.kind) for p in k1.paragraphs] == [
+            ("Top", "heading"),
+            ("Body one.", "text"),
+            ("Body two.", "text"),
+            ("Sub", "heading"),
+            ("Sub sub", "heading"),
+            ("Body three.", "text"),
+            ("Head cell", "table_cell"),
+            ("Data cell", "table_cell"),
+        ], k1.paragraphs
+
         pg = tmpdir / "gutenberg.epub"
         build_epub(
             pg,

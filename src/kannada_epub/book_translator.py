@@ -49,6 +49,15 @@ def needs_translation(text: str) -> bool:
     return bool(stripped) and _NOTHING_TO_TRANSLATE_RE.fullmatch(stripped) is None
 
 
+def _heading_numbers(heading_flags: list[bool]) -> set[int]:
+    """1-based ``[P<n>]`` positions of the flagged headings in a slice.
+
+    Positions are relative to the slice handed to the editor, matching the
+    ``[P<n>]`` tags the editor sees.
+    """
+    return {i for i, is_heading in enumerate(heading_flags, start=1) if is_heading}
+
+
 def restore_untranslatable(batch: "TranslatedBatch") -> int:
     """Put number-only source paragraphs back verbatim in a saved batch.
 
@@ -201,14 +210,19 @@ class BookTranslator:
         incoming_context: str,
         chapter_id: str,
         span_start: int,
+        heading_flags: list[bool] | None = None,
     ) -> list[EditedParagraph]:
         """Consistency-edit one slice of a batch, halving it on retryable errors.
 
         Returns one `EditedParagraph` per input paragraph, concatenated in
-        order across any splits. If a single-paragraph edit still fails with a
-        retryable error, that error propagates: the book fails rather than
-        risking a misalignment.
+        order across any splits. ``heading_flags`` is parallel to
+        ``english_texts``; every recursive half gets its own slice, so heading
+        numbers stay correct relative to that half's ``[P<n>]`` tags. If a
+        single-paragraph edit still fails with a retryable error, that error
+        propagates: the book fails rather than risking a misalignment.
         """
+        if heading_flags is None:
+            heading_flags = [False] * len(english_texts)
         draft_text = "\n\n".join(draft_kn)
         try:
             return self._editor.edit_chapter(
@@ -216,6 +230,7 @@ class BookTranslator:
                 glossary=glossary,
                 prior_chapter_context=incoming_context,
                 register=self._register,
+                heading_numbers=_heading_numbers(heading_flags),
             )
         except _RETRYABLE_EDITOR_ERRORS as exc:
             if len(english_texts) <= 1:
@@ -241,6 +256,7 @@ class BookTranslator:
                 incoming_context,
                 chapter_id,
                 span_start,
+                heading_flags[:mid],
             )
             # The second half continues the first half's English source, the
             # same rolling-context rule that carries between whole batches.
@@ -252,6 +268,7 @@ class BookTranslator:
                 right_context,
                 chapter_id,
                 span_start + mid,
+                heading_flags[mid:],
             )
             return left + right
 
@@ -285,6 +302,7 @@ class BookTranslator:
                 edited_paragraphs = [EditedParagraph(emotion="Narration", text=text) for text in english_texts]
                 if wanted:
                     wanted_texts = [english_texts[i] for i in wanted]
+                    wanted_heading_flags = [batch[i].kind == "heading" for i in wanted]
                     wanted_draft = self._engine.translate_paragraphs(wanted_texts, "eng_Latn", "kan_Knda")
                     if len(wanted_draft) != len(wanted_texts):
                         raise RuntimeError(
@@ -300,6 +318,7 @@ class BookTranslator:
                         incoming_context=rolling_context,
                         chapter_id=chapter.id,
                         span_start=start,
+                        heading_flags=wanted_heading_flags,
                     )
                     if len(wanted_edited) != len(wanted_texts):
                         raise RuntimeError(

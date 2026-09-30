@@ -30,6 +30,11 @@ edited version that only fixes:
 2. Pronoun / referent consistency — resolve ambiguous or inconsistent pronouns and character \
    references using PRIOR_CHAPTER_CONTEXT.
 3. Register — keep the tone consistent with REGISTER across the whole chapter.
+4. Headings and titles — paragraphs listed under HEADINGS are headings or titles. Translate their \
+   meaning into natural Kannada instead of transliterating English words into Kannada script. For \
+   example, "A Scandal in Bohemia" should become a Kannada phrase meaning "a scandal in Bohemia", \
+   with only the place name "Bohemia" transliterated. Names of people and places may stay \
+   transliterated.
 
 Do not rewrite sentences that are already correct. Do not change meaning, add content, or remove \
 content.
@@ -114,10 +119,18 @@ def _build_user_prompt(
     glossary: dict[str, str],
     prior_chapter_context: str,
     register: str,
+    heading_numbers: set[int] | None = None,
 ) -> str:
     glossary_block = "\n".join(f"- {en} -> {kn}" for en, kn in glossary.items()) or "(none)"
+    # Omitted entirely when there are no headings, so prompts for such chapters
+    # are byte-identical to before this argument existed.
+    headings_block = ""
+    if heading_numbers:
+        numbers = ", ".join(f"P{n}" for n in sorted(heading_numbers))
+        headings_block = f"HEADINGS:\n{numbers}\n\n"
     return (
         f"GLOSSARY:\n{glossary_block}\n\n"
+        f"{headings_block}"
         f"PRIOR_CHAPTER_CONTEXT:\n{prior_chapter_context or '(none — this is the first chapter)'}\n\n"
         f"REGISTER:\n{register}\n\n"
         f"DRAFT_CHAPTER:\n{_number_paragraphs(draft_kannada_text)}"
@@ -134,9 +147,12 @@ class ConsistencyEditor:
         glossary: dict[str, str],
         prior_chapter_context: str = "",
         register: str = "neutral, standard written Kannada",
+        heading_numbers: set[int] | None = None,
     ) -> list[EditedParagraph]:
         expected_count = len([p for p in draft_kannada_text.split("\n\n") if p.strip()])
-        user_prompt = _build_user_prompt(draft_kannada_text, glossary, prior_chapter_context, register)
+        user_prompt = _build_user_prompt(
+            draft_kannada_text, glossary, prior_chapter_context, register, heading_numbers
+        )
         result = self._provider.complete(SYSTEM_PROMPT, user_prompt)
         if not result.strip():
             raise EditorOutputError(

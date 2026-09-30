@@ -117,6 +117,28 @@ class FakeEditorProvider:
         return "\n\n".join(blocks)
 
 
+class RecordingEditorProvider:
+    """Wraps another editor provider and records every prompt it is given."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.system_prompts: list[str] = []
+        self.user_prompts: list[str] = []
+
+    def complete(self, system_prompt: str, user_prompt: str) -> str:
+        self.system_prompts.append(system_prompt)
+        self.user_prompts.append(user_prompt)
+        return self._inner.complete(system_prompt, user_prompt)
+
+
+def _headings_in_prompt(prompt: str) -> list[str]:
+    """The ``P<n>`` tags listed in a prompt's HEADINGS block ([] if absent)."""
+    match = re.search(r"HEADINGS:\n([^\n]*)", prompt)
+    if not match:
+        return []
+    return [tag.strip() for tag in match.group(1).split(",") if tag.strip()]
+
+
 class _EchoEditorProviderBase:
     """Parses the numbered draft and re-emits it, appending "[EDITED]" markers.
 
@@ -1096,6 +1118,89 @@ def _check_number_only_paragraphs(tmp: Path) -> None:
     assert restore_untranslatable(resumed) == 0
 
 
+def _check_heading_routing(tmp: Path) -> None:
+    """Headings reach the editor flagged, numbered within the editor's slice."""
+    from kannada_epub.consistency_editor import SYSTEM_PROMPT, _build_user_prompt
+
+    texts = [
+        ("A Scandal in Bohemia", "heading"),
+        ("Some body text.", "text"),
+        ("More body text.", "text"),
+        ("II", "heading"),
+        ("The Red-Headed League", "heading"),
+        ("Final body text.", "text"),
+    ]
+    chapter = Chapter(
+        id="headings",
+        title="Headings",
+        paragraphs=[Paragraph(i, text, kind) for i, (text, kind) in enumerate(texts)],
+    )
+
+    # --- one batch, no split: HEADINGS numbers skip the number-only "II" ----
+    recording = RecordingEditorProvider(FakeEditorProvider())
+    translator = BookTranslator(
+        translation_engine=FakeTranslationEngine(),
+        glossary_store=GlossaryStore(tmp / "headings.db"),
+        consistency_editor=ConsistencyEditor(recording),
+        batch_size=10,
+    )
+    [batch] = translator.translate_chapters([chapter])
+    assert len(recording.user_prompts) == 1, recording.user_prompts
+    prompt = recording.user_prompts[0]
+    # "II" bypasses the editor (#27), so the wanted list is
+    # [Scandal, body, body, Red-Headed, body] and its headings are P1, P4.
+    assert _headings_in_prompt(prompt) == ["P1", "P4"], prompt
+    assert "HEADINGS:" in prompt
+    assert batch.edited_kannada[3] == "II", batch.edited_kannada
+
+    # --- a chapter without headings: no HEADINGS block, prompt unchanged ----
+    plain = Chapter(
+        id="plain",
+        title="Plain",
+        paragraphs=[Paragraph(0, "First body."), Paragraph(1, "Second body.")],
+    )
+    recording_plain = RecordingEditorProvider(FakeEditorProvider())
+    translator_plain = BookTranslator(
+        translation_engine=FakeTranslationEngine(),
+        glossary_store=GlossaryStore(tmp / "plain.db"),
+        consistency_editor=ConsistencyEditor(recording_plain),
+        batch_size=10,
+    )
+    translator_plain.translate_chapters([plain])
+    assert len(recording_plain.user_prompts) == 1, recording_plain.user_prompts
+    captured = recording_plain.user_prompts[0]
+    assert "HEADINGS:" not in captured, captured
+    draft = [f"ಕನ್ನಡ {p.text[:10]}" for p in plain.paragraphs]
+    expected = _build_user_prompt(
+        "\n\n".join(draft), {}, "", "neutral, standard written Kannada"
+    )
+    assert captured == expected, (captured, expected)
+
+    # --- forced split: each half numbers headings within its own slice ------
+    truncating = RecordingEditorProvider(TruncatingEditorProvider(max_ok=2))
+    translator_split = BookTranslator(
+        translation_engine=FakeTranslationEngine(),
+        glossary_store=GlossaryStore(tmp / "headings_split.db"),
+        consistency_editor=ConsistencyEditor(truncating),
+        batch_size=10,
+    )
+    translator_split.translate_chapters([chapter])
+    # Call order: whole 5 (fails), left 2, right 3 (fails), its left 1, its
+    # right 2 — each prompt numbers headings relative to the paragraphs it has.
+    assert [_headings_in_prompt(p) for p in truncating.user_prompts] == [
+        ["P1", "P4"],
+        ["P1"],
+        ["P2"],
+        [],
+        ["P1"],
+    ], truncating.user_prompts
+
+    # --- the system prompt carries the new heading rule ---------------------
+    assert "HEADINGS" in SYSTEM_PROMPT, SYSTEM_PROMPT
+    assert "A Scandal in Bohemia" in SYSTEM_PROMPT, SYSTEM_PROMPT
+    assert "HEADINGS" in recording.system_prompts[0], recording.system_prompts[0]
+
+
 def _qa_chapter() -> tuple[Chapter, list[TranslatedBatch]]:
     """One chapter of three paragraphs and its single batch."""
     chapter = Chapter(
@@ -1377,6 +1482,12 @@ def main() -> None:
         _check_number_only_paragraphs(_number_tmp)
     finally:
         shutil.rmtree(_number_tmp, ignore_errors=True)
+
+    _heading_tmp = Path(tempfile.mkdtemp())
+    try:
+        _check_heading_routing(_heading_tmp)
+    finally:
+        shutil.rmtree(_heading_tmp, ignore_errors=True)
 
     # --- cloud-only import check (no local ML libs) ------------------------
     _check_cloud_only_import()

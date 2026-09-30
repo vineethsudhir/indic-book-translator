@@ -42,6 +42,11 @@ BLOCK_TAGS = [
 # with this kind so downstream consumers can tell them apart.
 TABLE_CELL_TAGS = ("td", "th")
 
+# Headings are ordinary paragraphs to the pipeline, but tagged so the
+# consistency editor can be told to translate their meaning rather than
+# transliterate them. ``h1``-``h6`` per the HTML/EPUB block set.
+HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
 # Publisher boilerplate wrappers. Each rule is ``(class_tokens, element_ids)``:
 # a block is boilerplate when it, or any ancestor, carries one of the class
 # tokens or has one of the ids. Applied per active publisher in
@@ -73,17 +78,23 @@ def _in_boilerplate(tag, rules: list[tuple[frozenset, frozenset]]) -> bool:
 
 
 def _paragraph_kind(tag) -> str:
-    """Classify a kept block as a table cell or ordinary text.
+    """Classify a kept block as a table cell, a heading, or ordinary text.
 
     A cell is either the ``td``/``th`` itself, or a block (e.g. the ``<p>`` in
-    ``<td><p>x</p></td>``) whose nearest block-level ancestor is one. A
-    ``caption`` stays ``"text"``.
+    ``<td><p>x</p></td>``) whose nearest block-level ancestor is one; the table
+    rule wins over the heading rule. A heading is an ``h1``-``h6`` itself, or a
+    block (e.g. the ``<p>`` in ``<h2><p>x</p></h2>``) whose nearest block-level
+    ancestor is one. A ``caption`` stays ``"text"``.
     """
     if tag.name in TABLE_CELL_TAGS:
         return "table_cell"
     parent = tag.find_parent(BLOCK_TAGS)
     if parent is not None and parent.name in TABLE_CELL_TAGS:
         return "table_cell"
+    if tag.name in HEADING_TAGS:
+        return "heading"
+    if parent is not None and parent.name in HEADING_TAGS:
+        return "heading"
     return "text"
 
 
@@ -419,9 +430,11 @@ def load_epub_chapters(
     `kannada_epub.epub_writer`, which re-reads the source with this same
     parse (and same block enumeration) so a `Paragraph.index` maps back to
     its element. Table cells (``td``/``th``) are included as translatable
-    units and tagged ``Paragraph.kind == "table_cell"``; ``caption`` is
-    treated as ordinary text. Full AST-preserving extraction (FR-1.3)
-    remains a separate, heavier piece of work for later.
+    units and tagged ``Paragraph.kind == "table_cell"``; headings (``h1``-``h6``,
+    including a block nested inside one) are tagged ``Paragraph.kind ==
+    "heading"``; ``caption`` is treated as ordinary text. The tag never changes
+    which blocks are extracted or their indices. Full AST-preserving extraction
+    (FR-1.3) remains a separate, heavier piece of work for later.
 
     A block tag that itself contains a block tag (e.g.
     ``<blockquote><p>…</p></blockquote>``) is skipped, so its text is not

@@ -84,8 +84,8 @@ def main() -> None:
         # --- extraction: cells are translatable, tagged units --------------
         by_text = {p.text: p for p in paragraphs}
 
-        # Ordinary blocks and the caption stay "text".
-        assert by_text["Chapter One"].kind == "text"
+        # Ordinary blocks and the caption stay "text"; the h1 is a heading.
+        assert by_text["Chapter One"].kind == "heading"
         assert by_text["First paragraph."].kind == "text"
         assert by_text["Second paragraph."].kind == "text"
         assert by_text["Table caption"].kind == "text"
