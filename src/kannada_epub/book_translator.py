@@ -195,6 +195,7 @@ class BookTranslator:
         context_tail_paragraphs: int = 2,
         register: str = "neutral, standard written Kannada",
         preserve_inline_markup: bool = False,
+        target_flores: str = "kan_Knda",
     ):
         self._engine = translation_engine
         self._glossary = glossary_store
@@ -203,6 +204,7 @@ class BookTranslator:
         self._context_tail = context_tail_paragraphs
         self._register = register
         self._preserve_inline_markup = preserve_inline_markup
+        self._target_flores = target_flores
 
     def _edit_with_split(
         self,
@@ -314,7 +316,9 @@ class BookTranslator:
                     wanted_texts = [english_texts[i] for i in wanted]
                     wanted_source = [source_texts[i] for i in wanted]
                     wanted_heading_flags = [batch[i].kind == "heading" for i in wanted]
-                    wanted_draft = self._engine.translate_paragraphs(wanted_texts, "eng_Latn", "kan_Knda")
+                    wanted_draft = self._engine.translate_paragraphs(
+                        wanted_texts, "eng_Latn", self._target_flores
+                    )
                     if len(wanted_draft) != len(wanted_texts):
                         raise RuntimeError(
                             f"Translation engine returned {len(wanted_draft)} paragraphs for "

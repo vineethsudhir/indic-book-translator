@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import test_pipeline as tp  # noqa: E402  (reused fake engines)
 from epub_fixture import build_epub  # noqa: E402
 
-from kannada_epub.app.paths import secrets_path, settings_path  # noqa: E402
+from kannada_epub.app.paths import outputs_dir, secrets_path, settings_path  # noqa: E402
 from kannada_epub.app.runner import BookRun  # noqa: E402
 from kannada_epub.app.settings import (  # noqa: E402
     KNOWN_KEYS,
@@ -118,13 +118,21 @@ def test_settings() -> None:
     assert defaults.epubcheck is True
     assert defaults.chapter_context == "auto"
     assert defaults.preserve_inline_markup is False
+    assert defaults.target_language == "kn"
 
-    changed = defaults.model_copy(update={"batch_size": 7, "tone_register": "formal Kannada"})
+    changed = defaults.model_copy(
+        update={
+            "batch_size": 7,
+            "tone_register": "formal Kannada",
+            "target_language": "ta",
+        }
+    )
     save_settings(changed)
     assert settings_path().exists()
     reloaded = load_settings()
     assert reloaded.batch_size == 7
     assert reloaded.tone_register == "formal Kannada"
+    assert reloaded.target_language == "ta"
     assert reloaded.translation == defaults.translation
 
     settings_path().write_text(
@@ -166,6 +174,7 @@ def test_settings() -> None:
     assert cfg.epubcheck is False
     assert cfg.chapter_context == "carry"
     assert cfg.preserve_inline_markup is True
+    assert cfg.target_language == "ta"
 
     provider_cfg = load_provider_config(cfg.provider_config)
     assert provider_cfg.provider == reloaded.editor.provider
@@ -226,7 +235,10 @@ def test_runner(settings: AppSettings) -> None:
     assert result is not None
     assert result.cancelled is False
     assert result.epub_path is not None and Path(result.epub_path).exists()
-    assert Path(result.epub_path).name == "sherlock_holmes.kn.preview.epub"
+    assert (
+        Path(result.epub_path).name
+        == f"sherlock_holmes.{settings.target_language}.preview.epub"
+    )
 
     # A second start while running is refused.
     slow = SlowFakeTranslationEngine()
@@ -439,6 +451,28 @@ def test_api() -> None:
         assert library.status_code == 200
         assert any(item["book_id"] == uploaded["book_id"] for item in library.json())
         assert all("epubcheck" in item for item in library.json()), library.json()
+
+        # A manifest recording a non-Kannada target is looked up with that
+        # language's suffix (older manifests without the key keep .kn.*).
+        ta_folder = outputs_dir() / "tamil-output"
+        ta_folder.mkdir(parents=True, exist_ok=True)
+        (ta_folder / "sherlock.ta.epub").write_bytes(b"PK\x03\x04not-a-real-epub")
+        (ta_folder / "manifest.json").write_text(
+            json.dumps({
+                "epub": "sherlock.epub",
+                "preview": False,
+                "paragraphs_translated": 1,
+                "paragraphs_total": 1,
+                "chapters": [],
+                "target_language": "ta",
+            }),
+            encoding="utf-8",
+        )
+        ta_entry = next(
+            item for item in client.get("/api/library", headers=authed).json()
+            if item["book_id"] == "tamil-output"
+        )
+        assert ta_entry["has_epub"] is True, ta_entry
         chapters = client.get(f"/api/library/{uploaded['book_id']}/chapters", headers=authed).json()
         assert len(chapters) == 13
         chapter_ids = [item["id"] for item in chapters]

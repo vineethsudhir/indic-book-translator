@@ -1,6 +1,6 @@
 # Indic Book Translator
 
-Translates English EPUB books into Kannada; more Indic languages are planned.
+Translates English EPUB books into Kannada, Tamil, Telugu, Malayalam, or Hindi; only Kannada bundles a font.
 
 > **Status:** This is an early v0.1 release. Translations are unreviewed machine
 > translation: they may be useful for reading drafts, but are not a substitute
@@ -97,7 +97,8 @@ private app-data location.
   translated. For example, “A Scandal in Bohemia” came out as a sound-alike.
 - Local Parler-TTS narration is slow: about 21 minutes for 24 paragraphs on an
   Apple Silicon Mac. Cloud narration ignores emotion tags.
-- Kannada is the only target language so far.
+- The other target languages rely on the reader's own fonts, and local Parler-TTS
+  voices are per language.
 - There are no packaged desktop installers yet; run the app from source.
 
 ## More detail

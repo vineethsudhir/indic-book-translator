@@ -23,6 +23,8 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path
 
+from .languages import LANGUAGES, TargetLanguage
+
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _GENERATED_COVER_RE = re.compile(r"^\d+_\d+-cover\.png$", re.IGNORECASE)
 _COVER_WIDTH = 1600
@@ -234,24 +236,26 @@ def _draw_segments(
         x += draw.textlength(segment, font=font)
 
 
-def render_cover(text: CoverText, font_dir: Path) -> bytes:
+def render_cover(
+    text: CoverText,
+    font_dir: Path,
+    language: TargetLanguage = LANGUAGES["kn"],
+) -> bytes:
     """Render a 1600x2400 RGB PNG cover; returns the PNG bytes.
 
-    Kannada is only drawn when Raqm shaping is available (otherwise it would
-    render as broken, unjoined glyphs); without it, the English title and
-    author are drawn large instead. Pillow is imported here, not at module
-    import, so every other code path works without it.
+    The target-script title is only drawn when ``language``'s font files are
+    present and Raqm shaping is available (otherwise it would render as broken,
+    unjoined glyphs); without either, the English title and author are drawn
+    large instead. Pillow is imported here, not at module import, so every
+    other code path works without it.
     """
     from PIL import Image, ImageDraw, ImageFont, PngImagePlugin, features
 
     font_dir = Path(font_dir)
-    bold_path = font_dir / "NotoSansKannada-Bold.ttf"
-    regular_path = font_dir / "NotoSansKannada-Regular.ttf"
-    for path in (bold_path, regular_path):
-        if not path.exists():
-            raise FileNotFoundError(f"cover font asset not found: {path}")
-
-    raqm = bool(features.check("raqm"))
+    bold_path = font_dir / language.font_bold
+    regular_path = font_dir / language.font_regular
+    has_font = bold_path.exists() and regular_path.exists()
+    raqm = has_font and bool(features.check("raqm"))
     layout_engine = ImageFont.Layout.RAQM if raqm else ImageFont.Layout.BASIC
 
     image = Image.new("RGB", (_COVER_WIDTH, _COVER_HEIGHT), _BACKGROUND)
@@ -263,7 +267,7 @@ def render_cover(text: CoverText, font_dir: Path) -> bytes:
         width=6,
     )
 
-    def kannada_font(size: int, *, bold: bool = False):
+    def target_font(size: int, *, bold: bool = False):
         path = bold_path if bold else regular_path
         if raqm:
             return ImageFont.truetype(str(path), size, layout_engine=layout_engine)
@@ -274,23 +278,27 @@ def render_cover(text: CoverText, font_dir: Path) -> bytes:
     def english_font(size: int):
         nonlocal latin_support
         if latin_support is None:
-            probe = ImageFont.truetype(str(regular_path), max(size, 24))
-            latin_support = _font_has_latin(probe)
+            try:
+                probe = ImageFont.truetype(str(regular_path), max(size, 24))
+            except OSError:
+                latin_support = False
+            else:
+                latin_support = _font_has_latin(probe)
         if latin_support:
             return ImageFont.truetype(str(regular_path), size)
         return ImageFont.load_default(size=size)
 
-    kannada_title = (text.title_kn or "").strip()
-    kannada_author = (text.author_kn or "").strip()
+    target_title = (text.title_kn or "").strip()
+    target_author = (text.author_kn or "").strip()
 
-    if raqm and kannada_title:
+    if raqm and target_title:
         _draw_block(
-            draw, kannada_title, lambda size: kannada_font(size, bold=True),
+            draw, target_title, lambda size: target_font(size, bold=True),
             (160, 360, 1440, 1330), 210, 64, _TITLE_COLOR,
         )
-        if kannada_author:
+        if target_author:
             _draw_block(
-                draw, kannada_author, lambda size: kannada_font(size),
+                draw, target_author, lambda size: target_font(size),
                 (260, 1360, 1340, 1650), 104, 44, _AUTHOR_COLOR,
             )
         if text.title_en:
@@ -304,7 +312,7 @@ def render_cover(text: CoverText, font_dir: Path) -> bytes:
                 (260, 2020, 1340, 2130), 50, 26, _ENGLISH_COLOR,
             )
     else:
-        # No Kannada shaping (or no Kannada title): English large instead.
+        # No target-script shaping (or font): English large instead.
         if text.title_en:
             _draw_block(
                 draw, text.title_en, english_font,
@@ -316,17 +324,20 @@ def render_cover(text: CoverText, font_dir: Path) -> bytes:
                 (220, 1690, 1380, 2010), 120, 48, _AUTHOR_COLOR,
             )
 
-    if raqm:
+    if raqm and has_font:
         _draw_segments(
             draw,
-            ["ಯಂತ್ರ ಅನುವಾದ", " · Machine translation"],
-            lambda index, size: (kannada_font(size) if index == 0 else english_font(size)),
+            [language.machine_translation_label, " · Machine translation"],
+            lambda index, size: (target_font(size) if index == 0 else english_font(size)),
             (180, 2180, 1420, 2300),
             46,
             26,
             _FOOTER_COLOR,
         )
     else:
+        # Without shaping or the script's font, target-script text would be
+        # drawn as broken or missing glyphs; the image can't borrow the
+        # reader's fonts, so the footer stays English.
         _draw_block(
             draw, _FOOTER_EN, english_font, (180, 2180, 1420, 2300), 46, 26, _FOOTER_COLOR
         )

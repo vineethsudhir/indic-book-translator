@@ -20,10 +20,10 @@ EMOTIONS = [
     "Happy", "Neutral", "Proper Noun", "News", "Sad", "Surprise",
 ]
 
-SYSTEM_PROMPT = """You are a Kannada-language consistency editor working on one chapter of a book \
-that has already been machine-translated from English into Kannada.
+SYSTEM_PROMPT_TEMPLATE = """You are a {name}-language consistency editor working on one chapter of a book \
+that has already been machine-translated from English into {name}.
 
-You are NOT translating from scratch. You are given a draft Kannada chapter and must return an \
+You are NOT translating from scratch. You are given a draft {name} chapter and must return an \
 edited version that only fixes:
 1. Glossary terms — every term in GLOSSARY must appear exactly as given wherever its English \
    source term occurs, replacing whatever the draft used instead.
@@ -31,8 +31,8 @@ edited version that only fixes:
    references using PRIOR_CHAPTER_CONTEXT.
 3. Register — keep the tone consistent with REGISTER across the whole chapter.
 4. Headings and titles — paragraphs listed under HEADINGS are headings or titles. Translate their \
-   meaning into natural Kannada instead of transliterating English words into Kannada script. For \
-   example, "A Scandal in Bohemia" should become a Kannada phrase meaning "a scandal in Bohemia", \
+   meaning into natural {name} instead of transliterating English words into {name} script. For \
+   example, "A Scandal in Bohemia" should become a {name} phrase meaning "a scandal in Bohemia", \
    with only the place name "Bohemia" transliterated. Names of people and places may stay \
    transliterated.
 
@@ -47,7 +47,7 @@ output entry. Never split one input paragraph into several output entries and ne
 input paragraphs into one, regardless of how much the tone or subject varies within a paragraph.
 
 Additionally, classify the emotional tone each paragraph should be narrated in for an audiobook \
-reading. Choose exactly one tag per paragraph from this fixed set: """ + ", ".join(EMOTIONS) + """. \
+reading. Choose exactly one tag per paragraph from this fixed set: {emotions}. \
 If a paragraph's tone varies internally, pick the single tag that best represents it as a whole — \
 do not split it to give different parts different tags. Use "Narration" for ordinary \
 descriptive/narrative prose; use a more specific tag only when the paragraph's content clearly \
@@ -66,15 +66,33 @@ EMOTION: Happy
 <edited paragraph 2 text>"""
 
 
+def system_prompt_for(language_name: str) -> str:
+    """The consistency editor's system prompt for a target language name."""
+    return SYSTEM_PROMPT_TEMPLATE.format(
+        name=language_name, emotions=", ".join(EMOTIONS)
+    )
+
+
+SYSTEM_PROMPT = system_prompt_for("Kannada")
+
+
 # Appended to SYSTEM_PROMPT only when the caller preserves inline markup
 # (FR-1.3), so prompts for plain runs stay byte-identical to before.
-INLINE_MARKUP_RULE = """
+INLINE_MARKUP_TEMPLATE = """
 
 This chapter was translated from a source with inline formatting. Words that were bold, italic, a \
 link or a footnote reference in the source are wrapped in numbered markers: ⟦1⟧ … ⟦/1⟧, ⟦2⟧ … \
-⟦/2⟧, and so on. Keep every marker pair around the Kannada words that translate the marked English \
+⟦/2⟧, and so on. Keep every marker pair around the {name} words that translate the marked English \
 words. Never add, remove or renumber markers, never move a marker onto different words, and never \
 let one marker pair cross another."""
+
+
+def inline_markup_rule_for(language_name: str) -> str:
+    """The inline-markup rule for a target language name."""
+    return INLINE_MARKUP_TEMPLATE.format(name=language_name)
+
+
+INLINE_MARKUP_RULE = inline_markup_rule_for("Kannada")
 
 
 @dataclass
@@ -149,8 +167,12 @@ def _build_user_prompt(
 
 
 class ConsistencyEditor:
-    def __init__(self, provider: ConsistencyEditorProvider):
+    def __init__(
+        self, provider: ConsistencyEditorProvider, language_name: str = "Kannada"
+    ):
         self._provider = provider
+        self._system_prompt = system_prompt_for(language_name)
+        self._inline_markup_rule = inline_markup_rule_for(language_name)
 
     def edit_chapter(
         self,
@@ -165,8 +187,8 @@ class ConsistencyEditor:
         user_prompt = _build_user_prompt(
             draft_kannada_text, glossary, prior_chapter_context, register, heading_numbers
         )
-        system_prompt = SYSTEM_PROMPT + (
-            INLINE_MARKUP_RULE if preserve_inline_markup else ""
+        system_prompt = self._system_prompt + (
+            self._inline_markup_rule if preserve_inline_markup else ""
         )
         result = self._provider.complete(system_prompt, user_prompt)
         if not result.strip():

@@ -44,6 +44,7 @@ from .cover import (
 )
 from .epub_io import BLOCK_TAGS, Chapter, _marked_elements, find_opf_path
 from .inline_markup import MARKER_RE, MarkerSpan, parse_markers, strip_markers
+from .languages import LANGUAGES, TargetLanguage
 
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
@@ -110,52 +111,92 @@ _RETAINED_TARGET_TAGS = (
 
 # Marks every output as unreviewed machine translation, so a copy that gets
 # shared still says what it is.
-MACHINE_TRANSLATION_CONTRIBUTOR = (
-    "Unreviewed machine translation into Kannada (Indic Book Translator)"
-)
+def machine_translation_contributor(language_name: str) -> str:
+    """The ``dc:contributor`` value for a target language name."""
+    return (
+        f"Unreviewed machine translation into {language_name} "
+        "(Indic Book Translator)"
+    )
 
-# (filename, media-type) for the files added next to the OPF.
-_FONT_FILES = [
-    ("NotoSansKannada-Regular.ttf", "font/ttf"),
-    ("NotoSansKannada-Bold.ttf", "font/ttf"),
-    ("OFL.txt", "text/plain"),
-]
 
-KANNADA_CSS = """\
-@font-face {
-  font-family: "Noto Sans Kannada";
+MACHINE_TRANSLATION_CONTRIBUTOR = machine_translation_contributor("Kannada")
+
+_FONT_CSS_TEMPLATE = """\
+@font-face {{
+  font-family: "{family}";
   font-style: normal;
   font-weight: 400;
-  src: url("../fonts/NotoSansKannada-Regular.ttf") format("truetype");
-}
+  src: url("../fonts/{regular}") format("truetype");
+}}
 
-@font-face {
-  font-family: "Noto Sans Kannada";
+@font-face {{
+  font-family: "{family}";
   font-style: normal;
   font-weight: 700;
-  src: url("../fonts/NotoSansKannada-Bold.ttf") format("truetype");
-}
+  src: url("../fonts/{bold}") format("truetype");
+}}
 
-body, p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th {
-  font-family: "Noto Sans Kannada", sans-serif;
+body, p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th {{
+  font-family: "{family}", sans-serif;
   line-height: 1.5em;
-}
+}}
 
-table {
+table {{
   table-layout: auto;
-}
+}}
 
-td, th {
+td, th {{
   overflow-wrap: anywhere;
   word-break: normal;
   line-height: 1.5em;
   vertical-align: top;
-}
+}}
 
-.qa-review-flag {
+.qa-review-flag {{
   background-color: #fff3cd;
-}
+}}
 """
+
+# Used when the target language's font files are not bundled: keep the family
+# name (a reader that has the font can still use it) with a serif fallback.
+_FALLBACK_CSS_TEMPLATE = """\
+body, p, li, blockquote, h1, h2, h3, h4, h5, h6, td, th {{
+  font-family: "{family}", serif;
+  line-height: 1.5em;
+}}
+
+table {{
+  table-layout: auto;
+}}
+
+td, th {{
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.5em;
+  vertical-align: top;
+}}
+
+.qa-review-flag {{
+  background-color: #fff3cd;
+}}
+"""
+
+
+def font_css_for(language: TargetLanguage) -> str:
+    """The stylesheet embedding ``language``'s font files."""
+    return _FONT_CSS_TEMPLATE.format(
+        family=language.font_family,
+        regular=language.font_regular,
+        bold=language.font_bold,
+    )
+
+
+def fallback_css_for(language: TargetLanguage) -> str:
+    """The stylesheet for a language whose font files are not bundled."""
+    return _FALLBACK_CSS_TEMPLATE.format(family=language.font_family)
+
+
+KANNADA_CSS = font_css_for(LANGUAGES["kn"])
 
 
 def _default_font_dir() -> Path:
@@ -316,6 +357,7 @@ def _translate_document(
     translations_by_index: dict[int, str],
     css_href: str,
     flagged_indices: set[int] | frozenset[int] = frozenset(),
+    language: TargetLanguage = LANGUAGES["kn"],
 ) -> bytes:
     soup = BeautifulSoup(content, "lxml")
     blocks = soup.find_all(BLOCK_TAGS)
@@ -341,8 +383,8 @@ def _translate_document(
 
     if soup.html is not None:
         soup.html["xmlns"] = "http://www.w3.org/1999/xhtml"
-        soup.html["lang"] = "kn"
-        soup.html["xml:lang"] = "kn"
+        soup.html["lang"] = language.key
+        soup.html["xml:lang"] = language.key
 
     if soup.head is not None:
         link = soup.new_tag("link", rel="stylesheet", type="text/css", href=css_href)
@@ -707,7 +749,9 @@ def find_gutenberg_mentions(epub_path: str | Path) -> list[tuple[str, str]]:
 
 
 def _update_opf(
-    opf_bytes: bytes, added_items: list[tuple[str, str, str]], language: str = "kn"
+    opf_bytes: bytes,
+    added_items: list[tuple[str, str, str]],
+    language: TargetLanguage = LANGUAGES["kn"],
 ) -> bytes:
     """Add manifest entries, force the package language and add the
     machine-translation contributor, keeping the rest."""
@@ -735,15 +779,16 @@ def _update_opf(
     languages = metadata.findall(f"{{{_DC_NS}}}language")
     if languages:
         for lang in languages:
-            lang.text = language
+            lang.text = language.key
     else:
         lang = etree.SubElement(metadata, f"{{{_DC_NS}}}language")
-        lang.text = language
+        lang.text = language.key
 
+    contributor_text = machine_translation_contributor(language.name)
     contributors = metadata.findall(f"{{{_DC_NS}}}contributor")
-    if not any(c.text == MACHINE_TRANSLATION_CONTRIBUTOR for c in contributors):
+    if not any(c.text == contributor_text for c in contributors):
         contributor = etree.SubElement(metadata, f"{{{_DC_NS}}}contributor")
-        contributor.text = MACHINE_TRANSLATION_CONTRIBUTOR
+        contributor.text = contributor_text
 
     return etree.tostring(root, xml_declaration=True, encoding="utf-8", pretty_print=True)
 
@@ -757,19 +802,25 @@ def write_translated_epub(
     flagged: dict[str, set[int]] | None = None,
     strip_gutenberg: bool = False,
     cover_text: CoverText | None = None,
+    language: TargetLanguage = LANGUAGES["kn"],
 ) -> None:
     """Repackage ``source_epub`` with translated paragraphs replaced in place.
 
-    ``translations`` maps chapter id -> {``Paragraph.index``: Kannada text}.
+    ``translations`` maps chapter id -> {``Paragraph.index``: translated text}.
     ``flagged`` optionally maps chapter id -> the set of ``Paragraph.index``
     values to mark with the ``qa-review-flag`` CSS class (QA flagged them for
     human review).
     ``strip_gutenberg`` removes Project Gutenberg boilerplate and metadata
     references from the output while retaining fragment targets. When it is
     set and the source's cover is one Project Gutenberg generated, the cover
-    is replaced in place with a Kannada cover rendered from ``cover_text``
-    (falling back to the OPF's cleaned English title and creator). If
-    rendering fails, the original cover is kept and a warning is emitted.
+    is replaced in place with a cover rendered from ``cover_text`` in
+    ``language`` (falling back to the OPF's cleaned English title and
+    creator). If rendering fails, the original cover is kept and a warning is
+    emitted.
+    ``language`` sets ``lang``/``xml:lang``, ``dc:language``, the stylesheet's
+    font family/files and the machine-translation contributor. When its font
+    files are not in ``font_dir``, no font is embedded (and a warning is
+    emitted); the stylesheet keeps the family name with a serif fallback.
     """
     source_epub = Path(source_epub)
     output_path = Path(output_path)
@@ -777,11 +828,24 @@ def write_translated_epub(
     flagged_by_chapter = {cid: set(indices) for cid, indices in (flagged or {}).items()}
 
     font_bytes: dict[str, bytes] = {}
-    for filename, _media_type in _FONT_FILES:
-        path = font_dir / filename
-        if not path.exists():
-            raise FileNotFoundError(f"font asset not found: {path}")
-        font_bytes[filename] = path.read_bytes()
+    font_regular_path = font_dir / language.font_regular
+    font_bold_path = font_dir / language.font_bold
+    embed_fonts = font_regular_path.exists() and font_bold_path.exists()
+    if embed_fonts:
+        for filename, path in (
+            (language.font_regular, font_regular_path),
+            (language.font_bold, font_bold_path),
+            ("OFL.txt", font_dir / "OFL.txt"),
+        ):
+            if not path.exists():
+                raise FileNotFoundError(f"font asset not found: {path}")
+            font_bytes[filename] = path.read_bytes()
+    else:
+        warnings.warn(
+            f"No bundled font for {language.name}; readers will use their own fonts.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     replaced_cover_path: str | None = None
     replaced_cover_bytes: bytes | None = None
@@ -799,6 +863,7 @@ def write_translated_epub(
         # Names of the package files we add, relative to the OPF directory.
         css_rel = "css/kannada.css"
         css_zip_path = posixpath.join(opf_dir, css_rel)
+        css_text = font_css_for(language) if embed_fonts else fallback_css_for(language)
 
         modified_docs: dict[str, bytes] = {}
         for chapter_id in sorted(set(translations) | set(flagged_by_chapter)):
@@ -823,6 +888,7 @@ def write_translated_epub(
                 by_index,
                 css_href,
                 flagged_by_chapter.get(chapter_id, frozenset()),
+                language=language,
             )
 
         replacement_uid = None
@@ -860,7 +926,9 @@ def write_translated_epub(
                             title_en=book_title,
                             author_en=creator or None,
                         )
-                        replaced_cover_bytes = render_cover(text, font_dir)
+                        replaced_cover_bytes = render_cover(
+                            text, font_dir, language=language
+                        )
                         replaced_cover_path = cover_path
                     except Exception as exc:  # noqa: BLE001 — never fail the book
                         warnings.warn(
@@ -893,24 +961,27 @@ def write_translated_epub(
                 if _RETAINED_ATTR.encode() in data or _KEPT_PG_ID_ATTR.encode() in data:
                     modified_docs[doc_path] = _drop_unreferenced_retained_ids(data, referenced)
 
-        added_items: list[tuple[str, str, str]] = [
-            ("kannada-font-regular", f"fonts/{_FONT_FILES[0][0]}", "font/ttf"),
-            ("kannada-font-bold", f"fonts/{_FONT_FILES[1][0]}", "font/ttf"),
-            ("kannada-ofl", f"fonts/{_FONT_FILES[2][0]}", "text/plain"),
-            ("kannada-css", css_rel, "text/css"),
-        ]
+        if embed_fonts:
+            added_items: list[tuple[str, str, str]] = [
+                ("kannada-font-regular", f"fonts/{language.font_regular}", "font/ttf"),
+                ("kannada-font-bold", f"fonts/{language.font_bold}", "font/ttf"),
+                ("kannada-ofl", "fonts/OFL.txt", "text/plain"),
+                ("kannada-css", css_rel, "text/css"),
+            ]
+        else:
+            added_items = [("kannada-css", css_rel, "text/css")]
         added_bytes: dict[str, bytes] = {
             posixpath.join(opf_dir, "fonts", name): data
             for name, data in font_bytes.items()
         }
-        added_bytes[css_zip_path] = KANNADA_CSS.encode("utf-8")
+        added_bytes[css_zip_path] = css_text.encode("utf-8")
 
         opf_input = (
             etree.tostring(opf_root, encoding="utf-8")
             if strip_gutenberg
             else source_data[opf_path]
         )
-        modified_opf = _update_opf(opf_input, added_items)
+        modified_opf = _update_opf(opf_input, added_items, language)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(

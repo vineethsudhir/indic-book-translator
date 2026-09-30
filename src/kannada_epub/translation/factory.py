@@ -4,7 +4,9 @@ from .cloud import OpenAICompatibleTranslationProvider
 
 
 def build_translation_provider(
-    config: TranslationModelConfig, ct2_model_dir: str | None = None
+    config: TranslationModelConfig,
+    ct2_model_dir: str | None = None,
+    language_name: str = "Kannada",
 ) -> TranslationProvider:
     if config.provider == "indictrans2_local":
         if not ct2_model_dir:
@@ -44,6 +46,7 @@ def build_translation_provider(
             model=config.model,
             temperature=config.temperature,
             max_tokens=config.max_tokens,
+            language_name=language_name,
         )
 
     raise ValueError(f"Unknown translation provider: {config.provider!r}")

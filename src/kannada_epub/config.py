@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from .languages import get_language
 
 
 class ProviderConfig(BaseModel):
@@ -76,6 +78,9 @@ class BookConfig(BaseModel):
     exclude_ids: list[str] = ["coverpage-wrapper"]
     strip_gutenberg: bool = False
     epubcheck: bool = False
+    # Which language to translate into. Kannada is the default and the only
+    # one with a bundled font; see kannada_epub.languages.
+    target_language: str = "kn"
     # FR-1.3: carry inline bold/italic/link markup through translation as
     # ⟦n⟧ … ⟦/n⟧ markers and rebuild it in the output EPUB. Off by default:
     # whether marker tokens hurt NMT quality is not measured yet.
@@ -89,6 +94,12 @@ class BookConfig(BaseModel):
     translation: TranslationModelConfig = TranslationModelConfig()
     tts: TTSModelConfig = TTSModelConfig()
     qa: QAConfig = QAConfig()
+
+    @field_validator("target_language")
+    @classmethod
+    def _check_target_language(cls, value: str) -> str:
+        get_language(value)
+        return value
 
 
 def load_provider_config(path: str | Path) -> ProviderConfig:

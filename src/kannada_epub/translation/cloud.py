@@ -5,17 +5,32 @@ import httpx
 
 from .base import TranslationProvider
 
-_SYSTEM_PROMPT = """You are an English-to-Kannada literary translator. Translate each numbered paragraph below into natural, standard written Kannada. Preserve meaning exactly: do not add, remove, or explain anything. Keep proper nouns, acronyms, and code in their original form. Return ONLY a JSON array of translated strings, one per input paragraph, in the same order."""
+_SYSTEM_PROMPT_TEMPLATE = """You are an English-to-{name} literary translator. Translate each numbered paragraph below into natural, standard written {name}. Preserve meaning exactly: do not add, remove, or explain anything. Keep proper nouns, acronyms, and code in their original form. Return ONLY a JSON array of translated strings, one per input paragraph, in the same order."""
 
 # Appended to the system prompt on a QA retry. The retry exists because the
 # first attempt scored low, so it asks for the two failure modes QA catches
 # most: dropped detail and English words left transliterated (not translated).
-_RETRY_INSTRUCTION = (
+_RETRY_INSTRUCTION_TEMPLATE = (
     "This is a second attempt at the same passage: produce a faithful, "
     "complete translation that keeps every detail of the original, and "
-    "translate ordinary English words into Kannada rather than "
+    "translate ordinary English words into {name} rather than "
     "transliterating them."
 )
+
+
+def system_prompt_for(language_name: str) -> str:
+    """The literary translator's system prompt for a target language name."""
+    return _SYSTEM_PROMPT_TEMPLATE.format(name=language_name)
+
+
+def retry_instruction_for(language_name: str) -> str:
+    """The retry instruction for a target language name."""
+    return _RETRY_INSTRUCTION_TEMPLATE.format(name=language_name)
+
+
+# Kannada forms, kept for callers/tests that reference the constants.
+_SYSTEM_PROMPT = system_prompt_for("Kannada")
+_RETRY_INSTRUCTION = retry_instruction_for("Kannada")
 
 
 def _numbered(paragraphs: list[str]) -> str:
@@ -60,6 +75,7 @@ class OpenAICompatibleTranslationProvider(TranslationProvider):
         temperature: float = 0.2,
         max_tokens: int = 4096,
         max_chars_per_call: int = 6000,
+        language_name: str = "Kannada",
     ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
@@ -67,6 +83,8 @@ class OpenAICompatibleTranslationProvider(TranslationProvider):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._max_chars_per_call = max_chars_per_call
+        self._system_prompt = system_prompt_for(language_name)
+        self._retry_instruction = retry_instruction_for(language_name)
 
     def _translate_chunk(
         self, chunk: list[str], *, temperature: float, system_prompt: str
@@ -131,7 +149,7 @@ class OpenAICompatibleTranslationProvider(TranslationProvider):
         return self._translate_all(
             paragraphs,
             temperature=self._temperature,
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=self._system_prompt,
         )
 
     def translate_paragraphs_retry(
@@ -146,7 +164,7 @@ class OpenAICompatibleTranslationProvider(TranslationProvider):
         return self._translate_all(
             paragraphs,
             temperature=min(self._temperature + 0.4, 1.0),
-            system_prompt=f"{_SYSTEM_PROMPT} {_RETRY_INSTRUCTION}",
+            system_prompt=f"{self._system_prompt} {self._retry_instruction}",
         )
 
     retry_description = "higher temperature, faithfulness instruction"

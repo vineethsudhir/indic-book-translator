@@ -32,7 +32,7 @@ from .book_translator import (
     detect_chapter_context,
     restore_untranslatable,
 )
-from .config import BookConfig, load_provider_config
+from .config import BookConfig, TTSModelConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
 from .cover import CoverText
 from .edition_check import edition_notes, edition_payload
@@ -54,6 +54,7 @@ from .epubcheck_runner import (
 )
 from .glossary import GlossaryStore
 from .inline_markup import strip_markers
+from .languages import get_language
 from .providers.factory import build_provider
 from .qa import (
     FLAGGED_FOR_REVIEW,
@@ -185,23 +186,38 @@ def build_components(
     :func:`kannada_epub.qa.build_qa` (which returns ``None`` when disabled),
     and TTS only when `need_tts`.
     """
+    language = get_language(cfg.target_language)
     translation_engine = build_translation_provider(
-        cfg.translation, ct2_model_dir=str(resolve_path(cfg.ct2_model_dir))
+        cfg.translation,
+        ct2_model_dir=str(resolve_path(cfg.ct2_model_dir)),
+        language_name=language.name,
     )
     glossary_store = GlossaryStore(resolve_path(cfg.glossary_db))
     provider_cfg = load_provider_config(resolve_path(cfg.provider_config))
-    editor = ConsistencyEditor(build_provider(provider_cfg))
+    editor = ConsistencyEditor(
+        build_provider(provider_cfg), language_name=language.name
+    )
 
     qa = build_qa(
         cfg.qa,
         default_provider_config_path=cfg.provider_config,
         resolve_path=resolve_path,
+        language=language,
     )
 
     tts: TTSProvider | None = None
     if need_tts:
+        tts_config = cfg.tts
+        # The default language code is Kannada's; when translating into another
+        # language, use its BCP-47 code rather than the stale default. A code the
+        # user changed is left alone.
+        if (
+            cfg.target_language != "kn"
+            and tts_config.language_code == TTSModelConfig().language_code
+        ):
+            tts_config = tts_config.model_copy(update={"language_code": language.bcp47})
         tts = build_tts_provider(
-            cfg.tts, local_model_dir=str(resolve_path("models/indic-parler-tts"))
+            tts_config, local_model_dir=str(resolve_path("models/indic-parler-tts"))
         )
 
     return PipelineComponents(
@@ -216,13 +232,19 @@ def build_components(
 # ---------------------------------------------------------------------------
 # QA
 # ---------------------------------------------------------------------------
-def output_file_names(epub_stem: str, preview: bool) -> tuple[str, str]:
+def output_file_names(
+    epub_stem: str, preview: bool, language_key: str = "kn"
+) -> tuple[str, str]:
     """(EPUB, audiobook) file names for a run's outputs.
 
     Previews get their own names so a partly translated book is never mistaken
     for the whole one (untranslated paragraphs stay English in the EPUB).
+    ``language_key`` is the target language's short code, also its file-name
+    suffix; Kannada ("kn") is the default and unchanged.
     """
-    suffix = ".kn.preview" if preview else ".kn"
+    suffix = (
+        f".{language_key}.preview" if preview else f".{language_key}"
+    )
     return f"{epub_stem}{suffix}.epub", f"{epub_stem}{suffix}.wav"
 
 
@@ -260,6 +282,7 @@ def _run_chapter_qa(
     """
     assert components.qa is not None
     back_translator, embedder = components.qa
+    target_flores = get_language(cfg.target_language).flores
     cache_path = _qa_cache_path(output_dir, chapter.id)
     source_english = [text for batch in batches for text in batch.source_english]
 
@@ -304,12 +327,12 @@ def _run_chapter_qa(
         engine = components.translation_engine
         if cfg.qa.vary_retry:
             new_drafts = engine.translate_paragraphs_retry(
-                retry_english, "eng_Latn", "kan_Knda"
+                retry_english, "eng_Latn", target_flores
             )
             description = getattr(engine, "retry_description", "same settings")
         else:
             new_drafts = engine.translate_paragraphs(
-                retry_english, "eng_Latn", "kan_Knda"
+                retry_english, "eng_Latn", target_flores
             )
             description = "same settings"
         # Strict: a retry is a 1:1 map of paragraphs. A wrong count would shift
@@ -431,12 +454,13 @@ def _build_cover_text(
     epub_path: Path,
     components: PipelineComponents,
     progress: Callable[[str], None],
+    target_flores: str = "kan_Knda",
 ) -> CoverText:
     """Translated title/author for a replacement cover.
 
     Strict by design: a translation that does not return exactly one string
     per input is treated as a failure (never padded or truncated), so the
-    title and author can never swap. On any failure the Kannada fields are
+    title and author can never swap. On any failure the translated fields are
     ``None`` and the writer falls back to an English cover.
     """
     raw_title, author_en = read_epub_metadata(epub_path)
@@ -450,7 +474,7 @@ def _build_cover_text(
         to_translate = [title_en] + ([author_en] if author_en else [])
         try:
             translated = components.translation_engine.translate_paragraphs(
-                to_translate, "eng_Latn", "kan_Knda"
+                to_translate, "eng_Latn", target_flores
             )
             if len(translated) != len(to_translate):
                 raise ValueError(
@@ -527,6 +551,7 @@ def run_book(
 ) -> RunResult:
     """Run the full book pipeline; see the module docstring for the contract."""
     emit = on_event or (lambda _event: None)
+    language = get_language(cfg.target_language)
     epub_path = resolve_path(cfg.epub_path)
     output_dir = resolve_path(cfg.output_dir)
     batch_size = options.batch_size or cfg.batch_size
@@ -593,6 +618,7 @@ def run_book(
         context_tail_paragraphs=cfg.context_tail_paragraphs,
         register=cfg.tone_register,
         preserve_inline_markup=cfg.preserve_inline_markup,
+        target_flores=language.flores,
     )
 
     manifest: dict = {
@@ -601,6 +627,7 @@ def run_book(
         "exclude_ids": list(cfg.exclude_ids),
         "chapter_context": chapter_context,
         "preserve_inline_markup": cfg.preserve_inline_markup,
+        "target_language": cfg.target_language,
         "paragraphs_translated": 0,
         "paragraphs_total": 0,
         "chapters": [],
@@ -716,7 +743,7 @@ def run_book(
         for result in all_results:
             if result.status == FLAGGED_FOR_REVIEW:
                 flagged.setdefault(result.chapter, set()).add(result.paragraph_index)
-        epub_name, _ = output_file_names(epub_path.stem, is_preview)
+        epub_name, _ = output_file_names(epub_path.stem, is_preview, language.key)
         epub_out_path = output_dir / epub_name
 
         cover_text: CoverText | None = None
@@ -729,7 +756,9 @@ def run_book(
                 source_cover = None
             if source_cover is not None:
                 try:
-                    cover_text = _build_cover_text(epub_path, components, progress)
+                    cover_text = _build_cover_text(
+                        epub_path, components, progress, language.flores
+                    )
                 except Exception as exc:  # noqa: BLE001 — never fail the book
                     progress(f"Cover title not translated: {exc}")
                     cover_text = None
@@ -743,7 +772,13 @@ def run_book(
                 flagged=flagged,
                 strip_gutenberg=cfg.strip_gutenberg,
                 cover_text=cover_text,
+                language=language,
             )
+
+        for item in caught:
+            if "No bundled font for" in str(item.message):
+                progress(str(item.message))
+                break
 
         if cfg.strip_gutenberg:
             remaining = find_gutenberg_mentions(epub_out_path)
@@ -763,7 +798,7 @@ def run_book(
                 if still_generated is None:
                     progress(
                         "Replaced Project Gutenberg's generated cover with a "
-                        "Kannada cover"
+                        f"{language.name} cover"
                     )
                     cover_replaced = True
                 else:
@@ -800,7 +835,7 @@ def run_book(
     audiobook_path: Path | None = None
     if options.build_audiobook and components.tts is not None:
         emit({"type": "stage", "stage": "audiobook"})
-        _, audio_name = output_file_names(epub_path.stem, is_preview)
+        _, audio_name = output_file_names(epub_path.stem, is_preview, language.key)
         audiobook_path = output_dir / audio_name
         build_audiobook(
             batches=all_batches,

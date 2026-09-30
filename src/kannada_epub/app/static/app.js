@@ -1817,6 +1817,24 @@
       </label>
       ${epubcheckStatus}
       <div class="field">
+        <label class="field-label" for="target-language">Translate into</label>
+        <select class="input" id="target-language">
+          ${[
+            ["kn", "Kannada"],
+            ["ta", "Tamil"],
+            ["te", "Telugu"],
+            ["ml", "Malayalam"],
+            ["hi", "Hindi"],
+          ].map(([value, name]) =>
+            `<option value="${value}"` +
+            `${settings.target_language === value ? " selected" : ""}>${name}</option>`,
+          ).join("")}
+        </select>
+        <p class="muted">Only Kannada has a bundled font so far; other languages
+          rely on the reader's own fonts. Local narration voices are per
+          language.</p>
+      </div>
+      <div class="field">
         <span class="field-label">Chapters are…</span>
         ${radioChoices("chapter-context", [
           ["auto", "Detect automatically",
@@ -2058,6 +2076,7 @@
       },
       batch_size: Number(fieldValue("batch-size")),
       tone_register: fieldValue("register"),
+      target_language: fieldValue("target-language"),
       exclude_ids: fieldValue("exclude").split(",").map(value => value.trim()).filter(Boolean),
       strip_gutenberg: document.getElementById("strip-gutenberg").checked,
       preserve_inline_markup: document.getElementById("preserve-inline-markup").checked,

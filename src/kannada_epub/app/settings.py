@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from ..config import (
     BookConfig,
@@ -26,6 +26,7 @@ from ..config import (
     TTSModelConfig,
 )
 from ..epubcheck_runner import find_epubcheck
+from ..languages import get_language
 from .paths import (
     editor_config_path,
     glossary_db_path,
@@ -90,6 +91,8 @@ class AppSettings(BaseModel):
     )
     batch_size: int = 20
     tone_register: str = "neutral, standard written Kannada"
+    # Which language to translate into; see kannada_epub.languages.
+    target_language: str = "kn"
     exclude_ids: list[str] = Field(
         default_factory=lambda: ["coverpage-wrapper"]
     )
@@ -102,6 +105,12 @@ class AppSettings(BaseModel):
     # "auto" detects continuous novels from the chapter titles; "carry"/"reset"
     # force how the consistency editor sees the previous chapter's context.
     chapter_context: Literal["auto", "carry", "reset"] = "auto"
+
+    @field_validator("target_language")
+    @classmethod
+    def _check_target_language(cls, value: str) -> str:
+        get_language(value)
+        return value
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +247,7 @@ def book_config_for(epub_path: str | Path, settings: AppSettings) -> tuple[BookC
         provider_config=str(editor_yaml),
         batch_size=settings.batch_size,
         tone_register=settings.tone_register,
+        target_language=settings.target_language,
         exclude_ids=list(settings.exclude_ids),
         strip_gutenberg=settings.strip_gutenberg,
         epubcheck=settings.epubcheck,

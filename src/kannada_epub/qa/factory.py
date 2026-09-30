@@ -2,6 +2,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import QAConfig, load_provider_config, resolve_api_key
+from ..languages import LANGUAGES, TargetLanguage
 from ..providers.factory import build_provider
 from .backtranslate import LLMBackTranslator, LocalBackTranslator
 from .base import BackTranslator, Embedder
@@ -13,24 +14,29 @@ def build_qa(
     *,
     default_provider_config_path: str,
     resolve_path: Callable[[str], Path],
+    language: TargetLanguage = LANGUAGES["kn"],
 ) -> tuple[BackTranslator, Embedder] | None:
     """Build the configured back-translator and embedder.
 
     Returns None when QA is disabled, without importing any heavy backend.
     `resolve_path` maps a config-relative path string to an absolute Path (the
     caller passes the same `_resolve` used in scripts/translate_book.py).
+    `language` is the target language whose FLORES code the local back-translator
+    translates from and whose name the LLM prompt uses.
     """
     if not cfg.enabled:
         return None
 
     if cfg.back_translation == "indictrans2_local":
         back_translator: BackTranslator = LocalBackTranslator(
-            resolve_path(cfg.indic_en_model_dir)
+            resolve_path(cfg.indic_en_model_dir), target_flores=language.flores
         )
     elif cfg.back_translation == "llm":
         provider_config_path = cfg.llm_provider_config or default_provider_config_path
         provider_cfg = load_provider_config(resolve_path(provider_config_path))
-        back_translator = LLMBackTranslator(build_provider(provider_cfg))
+        back_translator = LLMBackTranslator(
+            build_provider(provider_cfg), language_name=language.name
+        )
     else:
         raise ValueError(f"Unknown back_translation engine: {cfg.back_translation!r}")
 

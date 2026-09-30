@@ -4,7 +4,16 @@ from pathlib import Path
 
 from .base import BackTranslator
 
-_SYSTEM_PROMPT = """You are a Kannada-to-English translator. Translate each numbered Kannada paragraph below into literal, faithful English. Preserve meaning exactly: do not add, remove, summarize, or explain anything. Return ONLY a JSON array of translated strings, one per input paragraph, in the same order."""
+_SYSTEM_PROMPT_TEMPLATE = """You are a {name}-to-English translator. Translate each numbered {name} paragraph below into literal, faithful English. Preserve meaning exactly: do not add, remove, summarize, or explain anything. Return ONLY a JSON array of translated strings, one per input paragraph, in the same order."""
+
+
+def system_prompt_for(language_name: str) -> str:
+    """The back-translator's system prompt for a source language name."""
+    return _SYSTEM_PROMPT_TEMPLATE.format(name=language_name)
+
+
+# Kannada form, kept for callers/tests that reference the constant.
+_SYSTEM_PROMPT = system_prompt_for("Kannada")
 
 # Same "first [...] block" fallback as
 # src/kannada_epub/translation/cloud.py::_parse_output.
@@ -42,13 +51,14 @@ class LLMBackTranslator(BackTranslator):
     with a strict count check so paragraphs can never be misaligned.
     """
 
-    def __init__(self, provider):
+    def __init__(self, provider, language_name: str = "Kannada"):
         self._provider = provider
+        self._system_prompt = system_prompt_for(language_name)
 
     def back_translate(self, kannada: list[str]) -> list[str]:
         if not kannada:
             return []
-        raw = self._provider.complete(_SYSTEM_PROMPT, _numbered(kannada))
+        raw = self._provider.complete(self._system_prompt, _numbered(kannada))
         return _parse_output(raw, len(kannada))
 
 
@@ -61,8 +71,9 @@ class LocalBackTranslator(BackTranslator):
     `__init__` so importing this module never requires the model or its deps.
     """
 
-    def __init__(self, model_dir: str | Path):
+    def __init__(self, model_dir: str | Path, target_flores: str = "kan_Knda"):
         model_dir = Path(model_dir)
+        self._target_flores = target_flores
         if not model_dir.exists():
             raise FileNotFoundError(
                 f"IndicTrans2 Kannada->English model not found at '{model_dir}'. "
@@ -95,4 +106,4 @@ class LocalBackTranslator(BackTranslator):
     def back_translate(self, kannada: list[str]) -> list[str]:
         if not kannada:
             return []
-        return self._engine.translate_paragraphs(kannada, "kan_Knda", "eng_Latn")
+        return self._engine.translate_paragraphs(kannada, self._target_flores, "eng_Latn")

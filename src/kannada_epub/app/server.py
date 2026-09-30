@@ -434,7 +434,8 @@ def _book_outputs(folder: Path, manifest: dict) -> dict:
             except Exception:
                 pass
     preview = bool(manifest.get("preview", translated < total))
-    epub_name, audio_name = output_file_names(stem, preview)
+    target_language = str(manifest.get("target_language") or "kn")
+    epub_name, audio_name = output_file_names(stem, preview, target_language)
     # Older runs always wrote .kn.* names; fall back to them when present.
     if not (folder / epub_name).is_file() and (folder / f"{stem}.kn.epub").is_file():
         epub_name = f"{stem}.kn.epub"
@@ -984,9 +985,13 @@ def create_app(
         folder = _safe_book_dir(book_id)
         manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
         stem = Path(manifest.get("epub", book_id)).stem
+        target_language = str(manifest.get("target_language") or "kn")
         allowed = {"qa_report.json"}
         for preview in (False, True):
-            allowed.update(output_file_names(stem, preview))
+            allowed.update(output_file_names(stem, preview, target_language))
+        # Older runs always wrote .kn.* names.
+        for preview in (False, True):
+            allowed.update(output_file_names(stem, preview, "kn"))
         if name not in allowed or name not in {p.name for p in folder.iterdir() if p.is_file()}:
             raise HTTPException(404, "File not found")
         return FileResponse(folder / name, filename=name)
