@@ -25,8 +25,10 @@ import posixpath
 import re
 import tempfile
 import time
+import uuid
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import lxml.etree as etree
 from bs4 import BeautifulSoup
@@ -35,6 +37,12 @@ from .epub_io import BLOCK_TAGS, Chapter, find_opf_path
 
 _OPF_NS = "http://www.idpf.org/2007/opf"
 _DC_NS = "http://purl.org/dc/elements/1.1/"
+_NCX_MEDIA_TYPE = "application/x-dtbncx+xml"
+_PG_TITLE_PREFIX = "The Project Gutenberg eBook of "
+_PG_TITLE_SUFFIX = re.compile(r"\s*\|\s*Project Gutenberg\s*$", re.IGNORECASE)
+# Temporary marker on id spans kept from emptied boilerplate; removed before
+# writing, together with every marked span nothing links to.
+_RETAINED_ATTR = "data-kn-retained-id"
 
 # Marks every output as unreviewed machine translation, so a copy that gets
 # shared still says what it is.
@@ -218,6 +226,232 @@ def _translate_document(
     return _serialize_xhtml(content, soup)
 
 
+def _has_gutenberg_boilerplate(tag) -> bool:
+    classes = tag.get("class") or []
+    return "pg-boilerplate" in classes or tag.get("id") in {"pg-header", "pg-footer"}
+
+
+def _strip_boilerplate_elements(soup: BeautifulSoup) -> None:
+    candidates = [tag for tag in soup.find_all(True) if _has_gutenberg_boilerplate(tag)]
+    for element in candidates:
+        if any(_has_gutenberg_boilerplate(parent) for parent in element.parents):
+            continue
+        descendant_ids = [
+            descendant.get("id")
+            for descendant in element.find_all(attrs={"id": True})
+        ]
+        element.clear()
+        for identifier in descendant_ids:
+            anchor = soup.new_tag("span")
+            anchor["id"] = identifier
+            anchor[_RETAINED_ATTR] = ""
+            element.append(anchor)
+
+
+def _is_top_level_toc_list(ol, top_toc_list) -> bool:
+    return ol is top_toc_list
+
+
+def _strip_gutenberg_navigation(soup: BeautifulSoup, *, ncx: bool) -> None:
+    if ncx:
+        for point in list(soup.find_all("navPoint")):
+            label = point.find("navLabel")
+            if label is not None and "gutenberg" in label.get_text(" ", strip=True).lower():
+                point.decompose()
+        return
+
+    top_toc_list = None
+    for nav in soup.find_all("nav"):
+        nav_type = nav.get("epub:type") or nav.get("type") or ""
+        if "toc" in (nav_type if isinstance(nav_type, str) else " ".join(nav_type)).split():
+            top_toc_list = next(
+                (ol for ol in nav.find_all("ol") if ol.find_parent("ol") is None),
+                None,
+            )
+            if top_toc_list is not None:
+                break
+
+    for item in list(soup.find_all("li")):
+        links = item.find_all("a")
+        if not any("gutenberg" in link.get_text(" ", strip=True).lower() for link in links):
+            continue
+        if top_toc_list is not None and item.find_parent("ol") is top_toc_list:
+            direct_items = top_toc_list.find_all("li", recursive=False)
+            if len(direct_items) <= 1:
+                continue
+        item.decompose()
+
+    for ol in list(soup.find_all("ol")):
+        if _is_top_level_toc_list(ol, top_toc_list):
+            continue
+        if not ol.find("li"):
+            ol.decompose()
+
+
+def _clean_title_text(text: str, book_title: str) -> str:
+    if text[: len(_PG_TITLE_PREFIX)].lower() == _PG_TITLE_PREFIX.lower():
+        text = text[len(_PG_TITLE_PREFIX) :]
+    text = _PG_TITLE_SUFFIX.sub("", text)
+    if "gutenberg" in text.lower():
+        text = book_title
+    return text
+
+
+def _strip_gutenberg_xhtml(content: bytes, *, nav: bool = False, book_title: str = "") -> bytes:
+    soup = BeautifulSoup(content, "lxml")
+    _strip_boilerplate_elements(soup)
+
+    if soup.head is not None:
+        for meta in list(soup.head.find_all("meta")):
+            if any("gutenberg" in str(value).lower() for value in meta.attrs.values()):
+                meta.decompose()
+        title = soup.head.find("title")
+        if title is not None:
+            text = title.get_text()
+            cleaned = _clean_title_text(text, book_title)
+            if cleaned != text:
+                title.clear()
+                title.append(cleaned)
+
+    for link in list(soup.find_all("a", href=True)):
+        if "gutenberg.org" in link["href"].lower():
+            link.unwrap()
+
+    if nav:
+        _strip_gutenberg_navigation(soup, ncx=False)
+    return _serialize_xhtml(content, soup)
+
+
+def _fragment_targets(docs: dict[str, bytes]) -> set[str]:
+    """Every ``#fragment`` linked from ``href`` or NCX ``src`` in ``docs``."""
+    targets: set[str] = set()
+    pattern = re.compile(rb"""(?:href|src)\s*=\s*["'][^"'#]*#([^"']+)["']""")
+    for data in docs.values():
+        targets.update(unquote(m.decode("utf-8", "replace")) for m in pattern.findall(data))
+    return targets
+
+
+def _drop_unreferenced_retained_ids(content: bytes, referenced: set[str]) -> bytes:
+    soup = BeautifulSoup(content, "lxml")
+    for span in soup.find_all(attrs={_RETAINED_ATTR: True}):
+        if span.get("id") in referenced:
+            del span[_RETAINED_ATTR]
+        else:
+            span.decompose()
+    return _serialize_xhtml(content, soup)
+
+
+def _strip_gutenberg_ncx(content: bytes, book_title: str = "") -> bytes:
+    soup = BeautifulSoup(content, "xml")
+    _strip_gutenberg_navigation(soup, ncx=True)
+    for meta in list(soup.find_all("meta")):
+        # dtb:uid must stay (it is replaced with the new package id instead).
+        if meta.get("name", "").lower() != "dtb:uid" and any(
+            "gutenberg" in str(value).lower() for value in meta.attrs.values()
+        ):
+            meta.decompose()
+    for text in soup.find_all("text"):
+        if "gutenberg" in text.get_text().lower():
+            cleaned = _clean_title_text(text.get_text(), book_title)
+            text.clear()
+            text.append(cleaned)
+    return soup.encode(formatter="minimal")
+
+
+def _strip_gutenberg_metadata(root: etree._Element) -> str | None:
+    metadata = root.find(f"{{{_OPF_NS}}}metadata")
+    if metadata is None:
+        return None
+
+    unique_id = root.get("unique-identifier")
+    unique_identifier = next(
+        (
+            element
+            for element in metadata
+            if element.get("id") == unique_id
+            and etree.QName(element).namespace == _DC_NS
+            and etree.QName(element).localname == "identifier"
+        ),
+        None,
+    )
+    replacement_uid = None
+    if unique_identifier is not None:
+        old_value = "".join(unique_identifier.itertext())
+        if "gutenberg" in old_value.lower():
+            replacement_uid = "urn:uuid:" + str(
+                uuid.uuid5(uuid.NAMESPACE_URL, old_value)
+            )
+            unique_identifier.text = replacement_uid
+            for child in list(unique_identifier):
+                unique_identifier.remove(child)
+
+    remove = set()
+    for element in list(metadata):
+        qname = etree.QName(element)
+        if not (
+            qname.namespace == _DC_NS
+            or (qname.namespace == _OPF_NS and qname.localname == "meta")
+        ):
+            continue
+        if element is unique_identifier:
+            continue
+        if "gutenberg" in "".join(element.itertext()).lower():
+            remove.add(element)
+
+    # Remove metadata refinements (and refinements of those refinements) when
+    # their referenced metadata element is removed.
+    removed_ids = {element.get("id") for element in remove if element.get("id")}
+    changed = True
+    while changed:
+        changed = False
+        for element in list(metadata):
+            refines = element.get("refines", "")
+            if refines.startswith("#") and refines[1:] in removed_ids and element not in remove:
+                remove.add(element)
+                identifier = element.get("id")
+                if identifier:
+                    removed_ids.add(identifier)
+                changed = True
+
+    for element in remove:
+        metadata.remove(element)
+    return replacement_uid
+
+
+def _manifest_paths(opf_root: etree._Element, opf_dir: str) -> dict[str, tuple[str, str, str]]:
+    paths = {}
+    for item in opf_root.findall(f".//{{{_OPF_NS}}}manifest/{{{_OPF_NS}}}item"):
+        item_id = item.get("id")
+        if not item_id:
+            continue
+        href = unquote(urlsplit(item.get("href", "")).path)
+        path = posixpath.normpath(posixpath.join(opf_dir, href))
+        paths[item_id] = (
+            path,
+            item.get("media-type", ""),
+            item.get("properties", ""),
+        )
+    return paths
+
+
+def find_gutenberg_mentions(epub_path: str | Path) -> list[tuple[str, str]]:
+    """Return one ``(zip entry, snippet)`` for every Gutenberg text match."""
+    eligible = (".xhtml", ".html", ".htm", ".opf", ".ncx")
+    matches: list[tuple[str, str]] = []
+    with zipfile.ZipFile(epub_path) as zf:
+        for name in zf.namelist():
+            if not name.lower().endswith(eligible):
+                continue
+            text = zf.read(name).decode("utf-8", errors="replace")
+            for match in re.finditer("gutenberg", text, re.IGNORECASE):
+                midpoint = (match.start() + match.end()) // 2
+                start = max(0, midpoint - 40)
+                end = min(len(text), start + 80)
+                start = max(0, end - 80)
+                matches.append((name, text[start:end]))
+    return matches
+
+
 def _update_opf(
     opf_bytes: bytes, added_items: list[tuple[str, str, str]], language: str = "kn"
 ) -> bytes:
@@ -267,6 +501,7 @@ def write_translated_epub(
     *,
     font_dir: str | Path | None = None,
     flagged: dict[str, set[int]] | None = None,
+    strip_gutenberg: bool = False,
 ) -> None:
     """Repackage ``source_epub`` with translated paragraphs replaced in place.
 
@@ -274,6 +509,8 @@ def write_translated_epub(
     ``flagged`` optionally maps chapter id -> the set of ``Paragraph.index``
     values to mark with the ``qa-review-flag`` CSS class (QA flagged them for
     human review).
+    ``strip_gutenberg`` removes Project Gutenberg boilerplate and metadata
+    references from the output while retaining fragment targets.
     """
     source_epub = Path(source_epub)
     output_path = Path(output_path)
@@ -294,6 +531,7 @@ def write_translated_epub(
 
         opf_dir = posixpath.dirname(opf_path)
         opf_root = etree.fromstring(source_data[opf_path])
+        manifest_paths = _manifest_paths(opf_root, opf_dir)
         manifest = _manifest_items(opf_root)
 
         # Names of the package files we add, relative to the OPF directory.
@@ -309,7 +547,7 @@ def write_translated_epub(
                     f"chapter {chapter_id!r} is not in the OPF manifest"
                 )
             doc_path = posixpath.normpath(
-                posixpath.join(opf_dir, posixpath.normpath(item["href"]))
+                posixpath.join(opf_dir, unquote(item["href"]))
             )
             if doc_path not in source_data:
                 raise ValueError(
@@ -325,6 +563,37 @@ def write_translated_epub(
                 flagged_by_chapter.get(chapter_id, frozenset()),
             )
 
+        replacement_uid = None
+        if strip_gutenberg:
+            title_element = opf_root.find(f"{{{_OPF_NS}}}metadata/{{{_DC_NS}}}title")
+            book_title = (
+                "".join(title_element.itertext()).strip() if title_element is not None else ""
+            )
+            book_title = _clean_title_text(book_title, "") or book_title
+            replacement_uid = _strip_gutenberg_metadata(opf_root)
+            for doc_path, media_type, properties in manifest_paths.values():
+                if doc_path not in source_data:
+                    continue
+                if media_type == "application/xhtml+xml":
+                    source = modified_docs.get(doc_path, source_data[doc_path])
+                    modified_docs[doc_path] = _strip_gutenberg_xhtml(
+                        source, nav="nav" in properties.split(), book_title=book_title
+                    )
+                elif media_type == _NCX_MEDIA_TYPE:
+                    content = _strip_gutenberg_ncx(source_data[doc_path], book_title)
+                    if replacement_uid:
+                        soup = BeautifulSoup(content, "xml")
+                        for meta in soup.find_all("meta"):
+                            if meta.get("name", "").lower() == "dtb:uid":
+                                meta["content"] = replacement_uid
+                        content = soup.encode(formatter="minimal")
+                    modified_docs[doc_path] = content
+
+            referenced = _fragment_targets(modified_docs)
+            for doc_path, data in list(modified_docs.items()):
+                if _RETAINED_ATTR.encode() in data:
+                    modified_docs[doc_path] = _drop_unreferenced_retained_ids(data, referenced)
+
         added_items: list[tuple[str, str, str]] = [
             ("kannada-font-regular", f"fonts/{_FONT_FILES[0][0]}", "font/ttf"),
             ("kannada-font-bold", f"fonts/{_FONT_FILES[1][0]}", "font/ttf"),
@@ -337,7 +606,12 @@ def write_translated_epub(
         }
         added_bytes[css_zip_path] = KANNADA_CSS.encode("utf-8")
 
-        modified_opf = _update_opf(source_data[opf_path], added_items)
+        opf_input = (
+            etree.tostring(opf_root, encoding="utf-8")
+            if strip_gutenberg
+            else source_data[opf_path]
+        )
+        modified_opf = _update_opf(opf_input, added_items)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(

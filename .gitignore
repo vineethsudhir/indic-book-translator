@@ -36,3 +36,5 @@ config/consistency_editor.yaml
 
 # Personal to-do list
 ACTION_ITEMS.md
+issues.md
+legal-questions.pdf

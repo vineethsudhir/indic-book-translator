@@ -981,8 +981,16 @@
   function advancedSettingsCard(settings) {
     return `<section class="card settings-card">
       <h2>Advanced</h2>
-      <p class="section-intro">Fine-tune paragraph grouping and which EPUB
-        sections are skipped.</p>
+      <p class="section-intro">Fine-tune paragraph grouping, skipped sections,
+        and optional cleanup for Project Gutenberg books.</p>
+      <label class="toggle-row">
+        <input class="switch" type="checkbox" id="strip-gutenberg"
+          ${settings.strip_gutenberg ? "checked" : ""}>
+        <span class="toggle-copy">
+          <strong>Remove Project Gutenberg text from the output</strong>
+          <small>Recommended before sharing a translation of a Gutenberg book.</small>
+        </span>
+      </label>
       <div class="advanced-grid">
         ${textField("batch-size", "Batch size", settings.batch_size, "number")}
         ${textField("register", "Writing style", settings.tone_register)}
@@ -1213,6 +1221,7 @@
       batch_size: Number(fieldValue("batch-size")),
       tone_register: fieldValue("register"),
       exclude_ids: fieldValue("exclude").split(",").map(value => value.trim()).filter(Boolean),
+      strip_gutenberg: document.getElementById("strip-gutenberg").checked,
     };
 
     if (embeddingChoice === "ollama") {

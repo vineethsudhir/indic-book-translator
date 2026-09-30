@@ -160,6 +160,8 @@ def load_epub_chapters(
     path: str | Path,
     min_paragraph_chars: int = 1,
     exclude_ids: list[str] | set[str] | None = None,
+    *,
+    skip_gutenberg_boilerplate: bool = True,
 ) -> list[Chapter]:
     """Extract reading-order chapters as plain paragraph text.
 
@@ -184,6 +186,10 @@ def load_epub_chapters(
     typically linear="no") are skipped — they are navigation aids, not
     content. Additional spine IDs (e.g. Project Gutenberg boilerplate
     chapters like "pg-header"/"pg-footer") can be skipped via `exclude_ids`.
+    By default, blocks inside Project Gutenberg boilerplate elements (the
+    ``pg-boilerplate`` class token or ``pg-header``/``pg-footer`` IDs) are
+    omitted while retaining their original block indices. Set
+    ``skip_gutenberg_boilerplate=False`` to include them.
     """
     chapters: list[Chapter] = []
     excluded = set(exclude_ids or [])
@@ -209,6 +215,20 @@ def load_epub_chapters(
             # keep enumerate() advancing so all other indices are unchanged.
             if tag.find(BLOCK_TAGS) is not None:
                 continue
+            if skip_gutenberg_boilerplate:
+                current = tag
+                in_boilerplate = False
+                while current is not None:
+                    classes = current.get("class") or []
+                    if (
+                        "pg-boilerplate" in classes
+                        or current.get("id") in {"pg-header", "pg-footer"}
+                    ):
+                        in_boilerplate = True
+                        break
+                    current = current.parent
+                if in_boilerplate:
+                    continue
             text = " ".join(tag.get_text().split())
             if len(text) >= min_paragraph_chars:
                 paragraphs.append(Paragraph(i, text, _paragraph_kind(tag)))

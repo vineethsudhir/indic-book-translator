@@ -91,6 +91,53 @@ def main() -> None:
         assert read_epub_metadata(src) == ("The Title", "An Author")
         assert [c.id for c in load_epub_chapters(src, exclude_ids=["c1"])] == ["c2"]
 
+        pg = tmpdir / "gutenberg.epub"
+        build_epub(
+            pg,
+            [
+                {
+                    "id": "item14",
+                    "href": "item14.xhtml",
+                    "content": _doc(
+                        "Story",
+                        '<p>Before.</p><div class="pg-boilerplate extra">'
+                        '<p>License text.</p></div>'
+                        '<p class="not-pg-boilerplate">Ordinary text.</p>'
+                        '<footer id="pg-footer"><p>Footer license.</p></footer>'
+                        '<p>After.</p>',
+                    ),
+                },
+                {
+                    "id": "pg-header",
+                    "href": "single.xhtml",
+                    "content": _doc(
+                        "Single",
+                        '<header id="pg-header" class="pg-boilerplate"><p>Header.</p>'
+                        '</header><p>Actual book paragraph one.</p>'
+                        '<p>Actual book paragraph two.</p>',
+                    ),
+                },
+            ],
+        )
+        skipped = {chapter.id: chapter for chapter in load_epub_chapters(pg)}
+        assert [(p.index, p.text) for p in skipped["item14"].paragraphs] == [
+            (0, "Story"),
+            (1, "Before."),
+            (3, "Ordinary text."),
+            (5, "After."),
+        ]
+        assert [p.text for p in skipped["pg-header"].paragraphs] == [
+            "Single",
+            "Actual book paragraph one.",
+            "Actual book paragraph two.",
+        ]
+        restored = {chapter.id: chapter for chapter in load_epub_chapters(
+            pg, skip_gutenberg_boilerplate=False
+        )}
+        assert restored["item14"].paragraphs[2].text == "License text."
+        assert restored["item14"].paragraphs[4].text == "Footer license."
+        assert restored["item14"].paragraphs[3].text == "Ordinary text."
+
         # Missing title/creator come back as None.
         bare = tmpdir / "bare.epub"
         build_epub(

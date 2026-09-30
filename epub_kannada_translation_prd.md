@@ -237,7 +237,7 @@ Continuity boundary rule (normative): **EPUB chapter == story boundary** for the
 6. **Phase 6: Emotion Tagging + TTS Audiobook (NEW — implemented).** Fixed emotion set, chunked Parler-TTS synthesis, peak normalization, single-WAV assembly (FR-8/FR-9).
 7. **Phase 7: Proofing & Regression Harness (NEW — implemented).** EN/KN sample export, proof HTML/PDF, `test_*.py` scripts (FR-10).
 8. **EbookLib licensing — done.** EbookLib (AGPL-3.0) was replaced rather than relicensing the project: it was only used to read the spine, documents and title/author, which `epub_io.py` now does with `zipfile` + `lxml`. The new reader returns byte-identical chapters, paragraph indices, titles and metadata to the EbookLib one on the sample book and a set of Project Gutenberg EPUB2/EPUB3 books, so existing checkpoints stay valid (`scripts/test_epub_io.py` pins the spine rules).
-9. **Action item — Project Gutenberg boilerplate.** Detect Project Gutenberg header/license sections and keep them in English (or offer to strip them) instead of machine-translating them, so translated public-domain books can be shared in line with Gutenberg's license.
+9. **Project Gutenberg boilerplate — done.** Boilerplate is skipped during translation, with an option to strip Gutenberg text and references from output EPUBs before sharing.
 10. **Next:** Human quality audit of generated translations; broader EPUB/table and reader-app validation; full inline-markup preservation; and optional integration of EPUBCheck. spaCy NER remains a future glossary improvement.
 
 ---

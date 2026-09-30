@@ -9,6 +9,7 @@ import posixpath
 import shutil
 import sys
 import tempfile
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -16,10 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 import lxml.etree as ET
 from bs4 import BeautifulSoup
+from epub_fixture import build_epub
 
 from kannada_epub.epub_io import load_epub_chapters
 from kannada_epub.epub_writer import (
     MACHINE_TRANSLATION_CONTRIBUTOR,
+    find_gutenberg_mentions,
     translations_from_batches,
     write_translated_epub,
 )
@@ -189,6 +192,131 @@ def main() -> None:
         assert [p.text for p in item4_out.paragraphs[n:]] == [
             p.text for p in item4.paragraphs[n:]
         ]
+
+        # --- optional Project Gutenberg cleanup ---------------------------
+        pg_source = tmpdir / "gutenberg.epub"
+        pg_output = tmpdir / "gutenberg.kn.epub"
+        unique_text = "Project Gutenberg ebook identifier"
+        build_epub(
+            pg_source,
+            [
+                {
+                    "id": "pg-header",
+                    "href": "book.xhtml",
+                    "content": (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>'
+                        'The Project Gutenberg eBook of Example | Project Gutenberg</title>'
+                        '<meta name="generator" content="Ebookmaker by Project Gutenberg"/>'
+                        '</head><body>'
+                        '<header id="pg-header" class="pg-boilerplate extra">'
+                        '<h1 id="header-heading">Project Gutenberg Header</h1>'
+                        '<p>License <a id="license-fragment">text</a></p></header>'
+                        '<p class="not-pg-boilerplate">The actual book text. '
+                        '<a href="#license-fragment">See note</a>. An '
+                        '<a href="https://www.gutenberg.org/ebooks/1">illustrated edition</a>'
+                        ' exists.</p>'
+                        '<footer id="pg-footer"><p id="footer-fragment">License.</p>'
+                        '</footer></body></html>'
+                    ),
+                },
+                {
+                    "id": "ncx",
+                    "href": "toc.ncx",
+                    "media_type": "application/x-dtbncx+xml",
+                    "in_spine": False,
+                    "content": (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/">'
+                        '<head><meta name="dtb:uid" content="Project Gutenberg old uid"/>'
+                        '<meta name="dtb:generator" content="Ebookmaker by Project Gutenberg"/>'
+                        '</head><navMap><navPoint id="pg"><navLabel><text>'
+                        'Project Gutenberg</text></navLabel></navPoint>'
+                        '<navPoint id="story"><navLabel><text>Story</text></navLabel>'
+                        '</navPoint></navMap></ncx>'
+                    ),
+                },
+            ],
+            identifier=unique_text,
+            extra_metadata=[
+                '<dc:source>Project Gutenberg source</dc:source>',
+                '<dc:publisher>Project Gutenberg</dc:publisher>',
+                '<meta id="pg-meta" property="belongs-to-collection">'
+                'Project Gutenberg collection</meta>',
+                '<meta refines="#pg-meta" property="title">Referenced metadata</meta>',
+            ],
+            nav_content=(
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<html xmlns="http://www.w3.org/1999/xhtml" '
+                'xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title>'
+                '</head><body><nav epub:type="toc"><ol>'
+                '<li><a href="book.xhtml#pg-header">Project Gutenberg</a></li>'
+                '<li><a href="book.xhtml">Story</a></li></ol>'
+                '<ol><li><a href="book.xhtml">Project Gutenberg extra</a></li></ol>'
+                '</nav></body></html>'
+            ),
+        )
+        assert find_gutenberg_mentions(pg_source)
+        write_translated_epub(pg_source, {}, pg_output, strip_gutenberg=True)
+        assert find_gutenberg_mentions(pg_output) == []
+        expected_uid = "urn:uuid:" + str(uuid.uuid5(uuid.NAMESPACE_URL, unique_text))
+        with zipfile.ZipFile(pg_output) as pg_zip:
+            opf_root = ET.fromstring(pg_zip.read("EPUB/content.opf"))
+            identifier = opf_root.find(f".//{{{DC_NS}}}identifier")
+            assert identifier.text == expected_uid
+            metadata_text = " ".join(opf_root.find(f"{{{OPF_NS}}}metadata").itertext())
+            assert "Gutenberg" not in metadata_text
+            assert opf_root.find('.//*[@id="pg-meta"]') is None
+            book_soup = BeautifulSoup(pg_zip.read("EPUB/book.xhtml"), "lxml")
+            assert book_soup.title.get_text() == "Example"
+            assert book_soup.find(id="pg-header").get_text(strip=True) == ""
+            assert book_soup.find(id="pg-footer").get_text(strip=True) == ""
+            # A linked fragment inside boilerplate survives as an empty span;
+            # unlinked ones are dropped, and the temporary marker never ships.
+            fragment = book_soup.find(id="license-fragment")
+            assert fragment is not None and fragment.name == "span"
+            assert fragment.get_text(strip=True) == "" and not fragment.attrs.keys() - {"id"}
+            for fragment_id in ("header-heading", "footer-fragment"):
+                assert book_soup.find(id=fragment_id) is None, fragment_id
+            assert book_soup.find("meta", attrs={"name": "generator"}) is None
+            # Links to gutenberg.org are unwrapped; their text stays.
+            assert "illustrated edition" in book_soup.get_text()
+            assert not [a for a in book_soup.find_all("a") if "gutenberg" in a.get("href", "")]
+            nav_soup = BeautifulSoup(pg_zip.read("EPUB/nav.xhtml"), "lxml")
+            assert "Gutenberg" not in nav_soup.get_text()
+            assert len(nav_soup.find("nav").find_all("ol", recursive=False)) == 1
+            ncx_root = ET.fromstring(pg_zip.read("EPUB/toc.ncx"))
+            assert ncx_root.find('.//*[@name="dtb:uid"]') is not None
+            assert ncx_root.find('.//*[@name="dtb:uid"]').get("content") == expected_uid
+            assert ncx_root.find('.//*[@id="pg"]') is None
+            assert ncx_root.find('.//*[@id="story"]') is not None
+            assert ncx_root.find('.//*[@name="dtb:generator"]') is None
+
+        # --- URL-encoded manifest hrefs resolve like the reader resolves them
+        encoded_source = tmpdir / "encoded.epub"
+        encoded_output = tmpdir / "encoded.kn.epub"
+        build_epub(
+            encoded_source,
+            [
+                {
+                    "id": "c1",
+                    "href": "chapter%20one.xhtml",
+                    "zip_name": "chapter one.xhtml",
+                    "content": (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>t</title>'
+                        "</head><body><p>Hello.</p></body></html>"
+                    ),
+                }
+            ],
+        )
+        encoded_chapter = load_epub_chapters(encoded_source)[0]
+        write_translated_epub(
+            encoded_source,
+            {"c1": {p.index: "ನಮಸ್ಕಾರ" for p in encoded_chapter.paragraphs}},
+            encoded_output,
+        )
+        assert load_epub_chapters(encoded_output)[0].paragraphs[0].text == "ನಮಸ್ಕಾರ"
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

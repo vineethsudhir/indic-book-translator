@@ -218,9 +218,9 @@ local speech model is gated and requires Hugging Face access. Run
 - **QA reports an embedding-model error:** select a model matching the
   configured embedding provider. Local MiniLM uses
   `sentence-transformers/all-MiniLM-L6-v2`.
-- **Unexpected content near the start/end of the book:** EPUBs can include
-  navigation and boilerplate documents in the spine. Non-linear documents are
-  skipped automatically; configure `exclude_ids` for additional spine IDs.
+- **Unexpected content near the start/end of the book:** Gutenberg boilerplate
+  paragraphs are skipped automatically. Non-linear documents are also skipped;
+  configure `exclude_ids` for additional spine IDs.
 - **Paragraph-count mismatch:** the pipeline stops rather than placing
   translation under the wrong source paragraph. Retry the chapter; reduce
   `batch_size` if it keeps happening.
@@ -244,38 +244,25 @@ CHANGELOG.md                     release history
 epub_kannada_translation_prd.md  requirements and implementation status
 ```
 
-## Legal and responsible use
+## Using translations responsibly
 
-This is not legal advice; check the law where you live and publish.
-
-- **Copyright.** A translation is a derivative work of the original. Translate
-  books you own for your own reading, or books in the public domain. Don't
-  share, publish or sell a translation of a copyrighted book without the
-  rights holder's permission. This also applies to generated audiobooks.
-- **Public domain depends on the country.** A book can be public domain in one
-  country and still copyrighted in another. In India, copyright generally
-  lasts 60 years after the author's death; in the US it depends on the
-  publication date. If you publish a translation online, check that the book
-  is public domain both where you publish and where your readers are.
-- **The English text must be public domain too.** For a book first written in
-  another language, the English translation you start from has its own
-  copyright, often held by a translator who died much later than the author.
-- **Project Gutenberg books.** Project Gutenberg's header and license text
-  are part of the EPUB and get machine-translated with the rest of the book. A
-  Kannada rendering of that license is not the license. Before sharing a
-  translated Gutenberg book, remove the Gutenberg header, license and every
-  other reference to Project Gutenberg. Its license allows derivative works of
-  US public-domain texts once those references are removed. Keeping the name
-  means complying with the full Gutenberg license and trademark terms.
-- **DRM.** The tool reads only DRM-free EPUBs and does not remove DRM. Removing
-  DRM is itself illegal in many countries, including India and the US.
-- **Machine translation.** Output is unreviewed machine translation and can be
-  wrong. Every output EPUB is labelled as machine translation in its
-  metadata; keep that label, and say so clearly, when you share a
-  translation.
-- **Your data.** With a cloud provider (Sarvam, Anthropic, OpenAI-compatible
-  services), book text is sent to that provider under its terms, using
-  your own API key. Local providers keep the text on your computer.
+- **Which books.** Translate books you own for your own reading, or books in
+  the public domain. Don't share or sell a translation (or audiobook) of a
+  copyrighted book without the rights holder's permission.
+- **Public domain varies by country.** A book can be free in one country and
+  copyrighted in another. For a book first written in another language, the
+  English translation has its own copyright too.
+- **Project Gutenberg books.** Gutenberg's header and licence are never
+  translated. Before sharing a translated Gutenberg book, turn on **Remove
+  Project Gutenberg text from the output** in Settings → Advanced. Check the
+  cover image yourself; the run log lists any Gutenberg mentions left.
+- **DRM.** Only DRM-free EPUBs can be opened; the tool does not remove DRM.
+- **Accuracy.** Output is unreviewed machine translation and can be wrong.
+  Each output EPUB is labelled as machine translation; keep that label when
+  you share it.
+- **Your data.** With a cloud provider, the book's text is sent to that
+  provider under its terms, using your own API key. Local providers keep
+  everything on your computer.
 
 ## Contributing
 

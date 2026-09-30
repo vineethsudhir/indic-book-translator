@@ -27,7 +27,11 @@ from .book_translator import BookTranslator, TranslatedBatch
 from .config import BookConfig, load_provider_config
 from .consistency_editor import ConsistencyEditor
 from .epub_io import Chapter, load_epub_chapters
-from .epub_writer import translations_from_batches, write_translated_epub
+from .epub_writer import (
+    find_gutenberg_mentions,
+    translations_from_batches,
+    write_translated_epub,
+)
 from .glossary import GlossaryStore
 from .providers.factory import build_provider
 from .qa import (
@@ -464,7 +468,20 @@ def run_book(
                 flagged.setdefault(result.chapter, set()).add(result.paragraph_index)
         epub_name, _ = output_file_names(epub_path.stem, is_preview)
         epub_out_path = output_dir / epub_name
-        write_translated_epub(epub_path, translations, epub_out_path, flagged=flagged)
+        write_translated_epub(
+            epub_path,
+            translations,
+            epub_out_path,
+            flagged=flagged,
+            strip_gutenberg=cfg.strip_gutenberg,
+        )
+        if cfg.strip_gutenberg:
+            remaining = find_gutenberg_mentions(epub_out_path)
+            if remaining:
+                progress(
+                    f"Warning: {len(remaining)} Project Gutenberg mention(s) remain; "
+                    f"first found in {remaining[0][0]}"
+                )
         progress(f"Wrote translated EPUB: {epub_out_path}")
 
     audiobook_path: Path | None = None

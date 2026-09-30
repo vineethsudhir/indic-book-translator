@@ -33,6 +33,9 @@ def build_epub(
     title: str | None = "Fixture",
     creator: str | None = "Tester",
     opf_dir: str = "EPUB",
+    identifier: str = "fixture-001",
+    extra_metadata: list[str] | None = None,
+    nav_content: str | None = None,
 ) -> None:
     """Write an EPUB 3 at ``path`` with ``documents`` plus a non-linear nav."""
     manifest = [
@@ -53,7 +56,7 @@ def build_epub(
             spine.append(f'<itemref idref={quoteattr(doc["id"])}{linear}/>')
 
     metadata = [
-        '<dc:identifier id="uid">fixture-001</dc:identifier>',
+        f'<dc:identifier id="uid">{escape(identifier)}</dc:identifier>',
         "<dc:language>en</dc:language>",
         '<meta property="dcterms:modified">2026-01-01T00:00:00Z</meta>',
     ]
@@ -61,6 +64,7 @@ def build_epub(
         metadata.append(f"<dc:title>{escape(title)}</dc:title>")
     if creator is not None:
         metadata.append(f"<dc:creator>{escape(creator)}</dc:creator>")
+    metadata.extend(extra_metadata or [])
 
     opf = f"""<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
@@ -83,7 +87,7 @@ def build_epub(
         zf.writestr(f"{prefix}content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
         zf.writestr(
             f"{prefix}nav.xhtml",
-            NAV_XHTML.format(href=escape(first_href)),
+            nav_content if nav_content is not None else NAV_XHTML.format(href=escape(first_href)),
             compress_type=zipfile.ZIP_DEFLATED,
         )
         for doc in documents:

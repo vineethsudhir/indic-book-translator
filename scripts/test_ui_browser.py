@@ -277,7 +277,10 @@ async def get_library_book(devtools: DevTools) -> tuple[str, str]:
     # Model a manifest created before chapter-title spacing was corrected.
     manifest_path = DATA_DIR / "outputs" / book["book_id"] / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["chapters"][0]["title"] = "I.A SCANDAL IN BOHEMIA"
+    manifest_chapter = next(
+        chapter for chapter in manifest["chapters"] if chapter["id"] == "item4"
+    )
+    manifest_chapter["title"] = "I.A SCANDAL IN BOHEMIA"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     chapters = await devtools.evaluate(
@@ -286,9 +289,10 @@ async def get_library_book(devtools: DevTools) -> tuple[str, str]:
         "headers: {'X-App-Token': token}})).json())(" +
         json.dumps(token) + "," + json.dumps(book["book_id"]) + ")"
     )
-    assert chapters and chapters[0]["id"] == "item4"
-    assert re.search(r"I\.\s+A", chapters[0]["title"]), chapters[0]["title"]
-    return book["book_id"], chapters[0]["id"]
+    item4 = next((chapter for chapter in chapters if chapter["id"] == "item4"), None)
+    assert item4 is not None
+    assert re.search(r"I\.\s+A", item4["title"]), item4["title"]
+    return book["book_id"], item4["id"]
 
 
 async def check_reader(devtools: DevTools, book_id: str, chapter_id: str) -> None:
@@ -305,7 +309,7 @@ async def check_reader(devtools: DevTools, book_id: str, chapter_id: str) -> Non
         "[...document.querySelectorAll('.chapter-navigation')].map(nav => nav.innerText)"
     )
     assert len(navigation) == 2
-    assert all("Chapter 1 of 12" in value for value in navigation)
+    assert all("Chapter 2 of 13" in value for value in navigation)
     next_link = await devtools.evaluate(
         "document.querySelector('.chapter-navigation .next[href]')?.innerText || ''"
     )
@@ -318,7 +322,7 @@ async def check_reader(devtools: DevTools, book_id: str, chapter_id: str) -> Non
     await wait_for_value(
         devtools,
         "document.querySelector('.chapter-navigation')?.innerText || ''",
-        lambda value: "Chapter 2 of 12" in value,
+        lambda value: "Chapter 3 of 13" in value,
     )
     await asyncio.sleep(0.2)
     devtools.assert_no_browser_errors("reader next chapter")

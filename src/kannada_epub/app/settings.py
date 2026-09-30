@@ -89,8 +89,9 @@ class AppSettings(BaseModel):
     batch_size: int = 20
     tone_register: str = "neutral, standard written Kannada"
     exclude_ids: list[str] = Field(
-        default_factory=lambda: ["pg-header", "pg-footer", "coverpage-wrapper"]
+        default_factory=lambda: ["coverpage-wrapper"]
     )
+    strip_gutenberg: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,12 @@ def load_settings() -> AppSettings:
     if not path.exists():
         return AppSettings()
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(raw, dict) and raw.get("exclude_ids") == [
+        "pg-header",
+        "pg-footer",
+        "coverpage-wrapper",
+    ]:
+        raw["exclude_ids"] = ["coverpage-wrapper"]
     return AppSettings.model_validate(raw)
 
 
@@ -222,6 +229,7 @@ def book_config_for(epub_path: str | Path, settings: AppSettings) -> tuple[BookC
         batch_size=settings.batch_size,
         tone_register=settings.tone_register,
         exclude_ids=list(settings.exclude_ids),
+        strip_gutenberg=settings.strip_gutenberg,
         translation=settings.translation,
         tts=settings.tts,
         qa=settings.qa,

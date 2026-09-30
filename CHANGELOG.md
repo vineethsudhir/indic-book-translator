@@ -7,12 +7,26 @@ All notable changes to this project are documented here. This changelog follows
 
 ### Added
 
-- A "Legal and responsible use" section in the README covering copyright,
-  country-specific public domain, Project Gutenberg's license text, DRM,
-  machine-translation labelling and cloud data handling.
-- A rights and privacy notice on the app's Translate page.
+- An option to remove Project Gutenberg text, metadata, links and navigation
+  entries from output EPUBs before sharing; the run log reports any Gutenberg
+  mentions left.
+- A "Using translations responsibly" section in the README and a rights and
+  privacy notice on the app's Translate page.
 - Output EPUBs carry a `dc:contributor` entry marking them as unreviewed
   machine translation.
+
+### Changed
+
+- Project Gutenberg boilerplate (`pg-boilerplate` elements) is skipped when
+  reading, wherever it appears. Older Gutenberg EPUBs no longer have their
+  licence machine-translated, and single-file Gutenberg books are no longer
+  skipped entirely. The default `exclude_ids` is now `coverpage-wrapper`
+  only; saved settings with the old default are migrated.
+
+### Fixed
+
+- Books whose manifest uses URL-encoded file names (e.g. `%20`) failed when
+  writing the translated EPUB.
 
 ### Removed
 

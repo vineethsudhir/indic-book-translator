@@ -15,9 +15,9 @@ book:
   context_tail_paragraphs: 2
   tone_register: neutral, standard written Kannada
   exclude_ids:
-    - pg-header
-    - pg-footer
     - coverpage-wrapper
+  # Remove Project Gutenberg boilerplate and references from the output.
+  strip_gutenberg: false
   # limit_chapters: [item4]
   # max_paragraphs_per_chapter: 20
 

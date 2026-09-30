@@ -110,7 +110,8 @@ def test_settings() -> None:
     assert defaults.qa.enabled is False
     assert defaults.batch_size == 20
     assert defaults.tone_register == "neutral, standard written Kannada"
-    assert defaults.exclude_ids == ["pg-header", "pg-footer", "coverpage-wrapper"]
+    assert defaults.exclude_ids == ["coverpage-wrapper"]
+    assert defaults.strip_gutenberg is False
 
     changed = defaults.model_copy(update={"batch_size": 7, "tone_register": "formal Kannada"})
     save_settings(changed)
@@ -120,6 +121,23 @@ def test_settings() -> None:
     assert reloaded.tone_register == "formal Kannada"
     assert reloaded.translation == defaults.translation
 
+    settings_path().write_text(
+        "exclude_ids:\n  - pg-header\n  - pg-footer\n  - coverpage-wrapper\n",
+        encoding="utf-8",
+    )
+    migrated = load_settings()
+    assert migrated.exclude_ids == ["coverpage-wrapper"]
+    settings_path().write_text("exclude_ids: [custom-section]\n", encoding="utf-8")
+    custom = load_settings()
+    assert custom.exclude_ids == ["custom-section"]
+
+    changed = changed.model_copy(
+        update={"exclude_ids": ["custom-section"], "strip_gutenberg": True}
+    )
+    save_settings(changed)
+    reloaded = load_settings()
+    assert reloaded.strip_gutenberg is True
+
     cfg, out_dir = book_config_for(EPUB, reloaded)
     assert isinstance(cfg, BookConfig)
     assert cfg.epub_path == str(EPUB)
@@ -128,6 +146,8 @@ def test_settings() -> None:
     assert out_dir.exists()
     assert cfg.batch_size == 7
     assert cfg.translation == reloaded.translation
+    assert cfg.exclude_ids == ["custom-section"]
+    assert cfg.strip_gutenberg is True
 
     provider_cfg = load_provider_config(cfg.provider_config)
     assert provider_cfg.provider == reloaded.editor.provider
@@ -286,7 +306,7 @@ def test_api() -> None:
         assert response.status_code == 200, response.text
         uploaded = response.json()
         assert uploaded["title"] and uploaded["title"] != EPUB.name
-        assert len(uploaded["chapters"]) == 12
+        assert len(uploaded["chapters"]) == 13
         assert all(chapter["title"] for chapter in uploaded["chapters"])
 
         missing = client.post("/api/run", headers=authed, json={"book_id": uploaded["book_id"], "qa": False})
@@ -309,7 +329,7 @@ def test_api() -> None:
         assert started.json()["state"] in {"running", "finished"}
         assert wait_until(lambda: client.get("/api/run", headers=authed).json()["state"] == "finished")
         run_status = client.get("/api/run", headers=authed).json()
-        assert run_status["chapter_total"] == 12
+        assert run_status["chapter_total"] == 13
         assert run_status["result"]["epub"]
         download = client.get(run_status["result"]["epub"], headers=headers)
         assert download.status_code == 200 and download.content.startswith(b"PK")
@@ -318,7 +338,7 @@ def test_api() -> None:
         assert library.status_code == 200
         assert any(item["book_id"] == uploaded["book_id"] for item in library.json())
         chapters = client.get(f"/api/library/{uploaded['book_id']}/chapters", headers=authed).json()
-        assert len(chapters) == 12
+        assert len(chapters) == 13
         chapter_ids = [item["id"] for item in chapters]
         assert chapter_ids.index("item4") < chapter_ids.index("item10")
         detail = client.get(f"/api/library/{uploaded['book_id']}/chapters/item4", headers=authed)
