@@ -2,7 +2,7 @@ import re
 
 import numpy as np
 
-from .base import TTSProvider
+from .base import EMOTION_PHRASES, TTSProvider
 
 # No trained Kannada sentence-segmentation model is wired in yet (see the
 # analogous English-only note in translation/engine.py), so this splits on
@@ -17,20 +17,7 @@ _KANNADA_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥])\s+")
 # long the source paragraph is.
 _MAX_CHUNK_CHARS = 200
 
-_EMOTION_PHRASES = {
-    "Command": "a commanding tone",
-    "Anger": "an angry tone",
-    "Narration": "a clear narration tone",
-    "Conversation": "a conversational tone",
-    "Disgust": "a disgusted tone",
-    "Fear": "a fearful tone",
-    "Happy": "a happy tone",
-    "Neutral": "a neutral tone",
-    "Proper Noun": "a clear, deliberate tone",
-    "News": "a news-reading tone",
-    "Sad": "a sad tone",
-    "Surprise": "a surprised tone",
-}
+_EMOTION_PHRASES = EMOTION_PHRASES
 
 
 def _split_sentences(text: str) -> list[str]:

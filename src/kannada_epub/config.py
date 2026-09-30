@@ -41,6 +41,10 @@ class TTSModelConfig(BaseModel):
     base_url: Optional[str] = None
     api_key_env: Optional[str] = None
     sampling_rate: int = 22050
+    # Let cloud voices use each paragraph's emotion tag where they can
+    # (Sarvam: pace; OpenAI gpt-4o TTS: instructions). Local Parler-TTS always
+    # uses it.
+    use_emotion: bool = True
 
 
 class QAConfig(BaseModel):

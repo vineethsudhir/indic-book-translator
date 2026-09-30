@@ -1713,7 +1713,16 @@
     const fields = textField("a-model", "Model", settings.tts.model) +
       textField("a-voice", "Voice", settings.tts.voice) +
       textField("a-base", "Base URL", settings.tts.base_url || "") +
-      textField("a-key", "API key name", settings.tts.api_key_env || "SARVAM_API_KEY");
+      textField("a-key", "API key name", settings.tts.api_key_env || "SARVAM_API_KEY") +
+      `<label class="toggle-row">
+        <input class="switch" type="checkbox" id="a-use-emotion"
+          ${settings.tts.use_emotion !== false ? "checked" : ""}>
+        <span class="toggle-copy">
+          <strong>Match each paragraph's mood where the voice supports it</strong>
+          <small>Sarvam adjusts the pace slightly; OpenAI gpt-4o voices get a tone
+            instruction. Other voices read every paragraph the same way.</small>
+        </span>
+      </label>`;
     return providerCard("audio-choice", "Audiobook voice",
       "Choose a voice provider for narrated audio.", choices, selected, local, fields);
   }
@@ -2022,6 +2031,7 @@
             : "openai_compatible",
         model: fieldValue("a-model"),
         voice: fieldValue("a-voice"),
+        use_emotion: document.getElementById("a-use-emotion")?.checked !== false,
         base_url: optionalFieldValue("a-base"),
         api_key_env: optionalFieldValue("a-key"),
       },

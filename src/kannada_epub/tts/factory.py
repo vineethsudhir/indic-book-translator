@@ -31,6 +31,7 @@ def build_tts_provider(config: TTSModelConfig, local_model_dir: str | None = Non
             language_code=config.language_code,
             base_url=config.base_url or "https://api.sarvam.ai",
             sampling_rate=config.sampling_rate,
+            use_emotion=config.use_emotion,
         )
 
     if config.provider == "openai_compatible":
@@ -43,6 +44,7 @@ def build_tts_provider(config: TTSModelConfig, local_model_dir: str | None = Non
             model=config.model,
             voice=config.voice,
             sampling_rate=config.sampling_rate,
+            use_emotion=config.use_emotion,
         )
 
     raise ValueError(f"Unknown TTS provider: {config.provider!r}")

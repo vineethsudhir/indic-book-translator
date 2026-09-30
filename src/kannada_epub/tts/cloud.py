@@ -6,7 +6,7 @@ import httpx
 import numpy as np
 import soundfile as sf
 
-from .base import TTSProvider
+from .base import EMOTION_PHRASES, TTSProvider
 
 _B64_RE = re.compile(r"^[A-Za-z0-9+/=\s]+$")
 
@@ -42,6 +42,33 @@ def _split_for_limit(text: str, max_chars: int) -> list[str]:
     return chunks or [text]
 
 
+# Sarvam Bulbul has no emotion parameter; v3 dropped pitch and loudness and
+# keeps pace (0.5-2.0). Emotion becomes a small pace change; tags not listed
+# keep the default pace, so the request is unchanged for them.
+_SARVAM_EMOTION_PACE = {
+    "Sad": 0.9,
+    "Fear": 1.05,
+    "Happy": 1.05,
+    "Command": 1.05,
+    "Anger": 1.1,
+    "Surprise": 1.1,
+}
+
+
+def _sarvam_pace(emotion: str) -> float:
+    return min(max(_SARVAM_EMOTION_PACE.get(emotion, 1.0), 0.5), 2.0)
+
+
+def _supports_instructions(model: str) -> bool:
+    """OpenAI's ``instructions`` field works only with gpt-4o TTS models.
+
+    tts-1 and tts-1-hd don't accept it, and other compatible services may
+    not either, so it is only sent to model names like gpt-4o-mini-tts.
+    """
+    name = model.lower()
+    return "gpt-4o" in name and "tts" in name
+
+
 class SarvamTTSProvider(TTSProvider):
     """Narrate via Sarvam AI Bulbul (`POST {base}/text-to-speech`).
 
@@ -53,8 +80,10 @@ class SarvamTTSProvider(TTSProvider):
     back once on a 422. Response audio is read defensively (`audios` list,
     else any base64-looking string that decodes to WAV bytes).
 
-    The `emotion` tag is ignored — Bulbul has no emotion parameter (v3 takes
-    `temperature` instead); `voice` selects the speaker (e.g. "anushka").
+    Bulbul has no emotion parameter (v3 supports `pace` and `temperature`,
+    not pitch or loudness), so with `use_emotion` the tag becomes a small
+    pace change (see `_SARVAM_EMOTION_PACE`); `voice` selects the speaker
+    (e.g. "anushka").
     """
 
     def __init__(
@@ -66,7 +95,9 @@ class SarvamTTSProvider(TTSProvider):
         base_url: str = "https://api.sarvam.ai",
         sampling_rate: int = 22050,
         max_chars_per_call: int = 2000,
+        use_emotion: bool = True,
     ):
+        self._use_emotion = use_emotion
         self._api_key = api_key
         self._voice = voice.lower()
         self._model = model
@@ -75,17 +106,20 @@ class SarvamTTSProvider(TTSProvider):
         self.sampling_rate = sampling_rate
         self._max_chars = max_chars_per_call
 
-    def _convert(self, text: str, language_field: str) -> httpx.Response:
+    def _convert(self, text: str, language_field: str, pace: float = 1.0) -> httpx.Response:
+        body = {
+            "text": text,
+            language_field: self._language_code,
+            "speaker": self._voice,
+            "model": self._model,
+            "speech_sample_rate": self.sampling_rate,
+        }
+        if pace != 1.0:
+            body["pace"] = pace
         return httpx.post(
             f"{self._base_url}/text-to-speech",
             headers={"api-subscription-key": self._api_key},
-            json={
-                "text": text,
-                language_field: self._language_code,
-                "speaker": self._voice,
-                "model": self._model,
-                "speech_sample_rate": self.sampling_rate,
-            },
+            json=body,
             timeout=120,
         )
 
@@ -103,10 +137,10 @@ class SarvamTTSProvider(TTSProvider):
                     return raw
         raise RuntimeError(f"Sarvam TTS response held no decodable audio. Keys: {sorted(payload.keys())}")
 
-    def _synthesize_chunk(self, text: str) -> np.ndarray:
-        response = self._convert(text, "target_language_code")
+    def _synthesize_chunk(self, text: str, pace: float = 1.0) -> np.ndarray:
+        response = self._convert(text, "target_language_code", pace)
         if response.status_code == 422:
-            response = self._convert(text, "language_code")
+            response = self._convert(text, "language_code", pace)
         response.raise_for_status()
         audio, rate = _decode_audio_bytes(self._extract_audio(response.json()))
         peak = np.abs(audio).max()
@@ -115,13 +149,14 @@ class SarvamTTSProvider(TTSProvider):
         return _resample(audio, rate, self.sampling_rate)
 
     def synthesize_paragraph(self, text: str, voice: str, emotion: str) -> np.ndarray:
+        pace = _sarvam_pace(emotion) if self._use_emotion else 1.0
         chunks = _split_for_limit(text, self._max_chars)
         gap = np.zeros(int(0.25 * self.sampling_rate), dtype=np.float32)
         pieces: list[np.ndarray] = []
         for i, chunk in enumerate(chunks):
             if i > 0:
                 pieces.append(gap)
-            pieces.append(self._synthesize_chunk(chunk))
+            pieces.append(self._synthesize_chunk(chunk, pace))
         return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
 
 
@@ -129,8 +164,10 @@ class OpenAICompatibleTTSProvider(TTSProvider):
     """Narrate via any OpenAI-compatible `/audio/speech` endpoint.
 
     Standard schema (`{model, input, voice, response_format: "wav"}` →
-    raw audio bytes). The `emotion` tag is ignored — the endpoint has no
-    equivalent parameter; `voice` passes through verbatim.
+    raw audio bytes). With `use_emotion`, gpt-4o TTS models also get an
+    `instructions` line describing the paragraph's emotion; other models
+    (tts-1, other services) don't accept that field, so for them the tag is
+    ignored. `voice` passes through verbatim.
     """
 
     def __init__(
@@ -141,7 +178,9 @@ class OpenAICompatibleTTSProvider(TTSProvider):
         voice: str,
         sampling_rate: int = 24000,
         max_chars_per_call: int = 4000,
+        use_emotion: bool = True,
     ):
+        self._use_emotion = use_emotion
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
@@ -149,16 +188,23 @@ class OpenAICompatibleTTSProvider(TTSProvider):
         self.sampling_rate = sampling_rate
         self._max_chars = max_chars_per_call
 
-    def _synthesize_chunk(self, text: str, voice: str) -> np.ndarray:
+    def _synthesize_chunk(self, text: str, voice: str, emotion: str = "Narration") -> np.ndarray:
+        body = {
+            "model": self._model,
+            "input": text,
+            "voice": voice or self._default_voice,
+            "response_format": "wav",
+        }
+        if self._use_emotion and _supports_instructions(self._model):
+            phrase = EMOTION_PHRASES.get(emotion, EMOTION_PHRASES["Narration"])
+            body["instructions"] = (
+                f"Read this Kannada text aloud like an audiobook narrator, in {phrase}, "
+                "at a moderate pace."
+            )
         response = httpx.post(
             f"{self._base_url}/audio/speech",
             headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "model": self._model,
-                "input": text,
-                "voice": voice or self._default_voice,
-                "response_format": "wav",
-            },
+            json=body,
             timeout=120,
         )
         response.raise_for_status()
@@ -175,5 +221,5 @@ class OpenAICompatibleTTSProvider(TTSProvider):
         for i, chunk in enumerate(chunks):
             if i > 0:
                 pieces.append(gap)
-            pieces.append(self._synthesize_chunk(chunk, voice))
+            pieces.append(self._synthesize_chunk(chunk, voice, emotion))
         return np.concatenate(pieces) if pieces else np.zeros(0, dtype=np.float32)
