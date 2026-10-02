@@ -23,7 +23,10 @@ they don't: invariants that break silently, and how to work here.
     `test_translation`, `test_tts`, `test_tts_voices`, `test_glossary`,
     `test_consistency_editor`, `test_book_translator`.
 - Validate EPUB output with EPUBCheck 5 (`java -jar epubcheck.jar out.epub`);
-  the sample book passes with 0 errors and output must too.
+  the sample book passes with 0 errors and output must too. After writer
+  changes, `scripts/check_corpus.py <epubs or folders>` writes each book with
+  placeholder translations and reports EPUBCheck errors the source lacks
+  (set `KANNADA_EPUBCHECK_JAR` to the jar).
 - Install extras: `.[gui]` is the cloud-only app, `.[local]` adds
   torch/IndicTrans2/Parler-TTS. `pip install -e .` alone is cloud-only.
 
