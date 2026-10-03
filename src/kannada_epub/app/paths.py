@@ -73,5 +73,12 @@ def outputs_dir() -> Path:
     return path
 
 
+def sites_dir() -> Path:
+    """Return (and create) the folder holding exported static websites."""
+    path = documents_dir() / "sites"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def glossary_db_path() -> Path:
     return data_dir() / "glossary.db"

@@ -79,7 +79,8 @@ also has an **Add to queue** button for the current book.
 **6. Read and review.** **Library** lists completed books. Open a book and
 chapter to see each English paragraph above its Kannada translation. **Only
 show paragraphs to review** filters to paragraphs marked for retry or review
-when QA is enabled.
+when QA is enabled. Tick books and press **Export website** to write a
+self-contained static site (plain HTML/CSS) you can copy and publish.
 
 The uploaded EPUBs and outputs are in
 `Documents/KannadaBookTranslator/books/` and

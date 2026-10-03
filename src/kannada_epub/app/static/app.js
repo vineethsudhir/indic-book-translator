@@ -1372,6 +1372,10 @@
       : "";
 
     return `<article class="card library-row">
+      <label class="book-select" title="Include in website export">
+        <input type="checkbox" data-export-book="${escapeHtml(book.book_id)}"
+          aria-label="Include ${escapeHtml(book.title)} in the website export">
+      </label>
       <div class="book-cover" aria-hidden="true">ಕ</div>
       <div class="book-info" data-book="${escapeHtml(book.book_id)}">
         <h3>${escapeHtml(book.title)}</h3>
@@ -1402,12 +1406,20 @@
     const bookList = books.length
       ? `<div class="book-list">${books.map(libraryBookCard).join("")}</div>`
       : emptyLibraryMarkup();
+    const exportToolbar = books.length
+      ? `<div class="toolbar">
+          <span class="muted" id="export-selection">Tick books to publish a
+            reading website.</span>
+          ${button("Export website", "primary", "id=export-site disabled")}
+        </div>
+        <div id="export-result"></div>`
+      : "";
     content.innerHTML = pageHeader(
       "Your books",
       "Library",
       "Open a translated book to read it chapter by chapter and review flagged " +
         "paragraphs.",
-    ) + bookList;
+    ) + exportToolbar + bookList;
 
     document.querySelectorAll("[data-book]").forEach(element => {
       element.addEventListener("click", () => {
@@ -1429,6 +1441,82 @@
         }
       });
     });
+    connectLibraryExport();
+  }
+
+  function connectLibraryExport() {
+    const boxes = [...document.querySelectorAll("[data-export-book]")];
+    const exportButton = document.getElementById("export-site");
+    const selectionNote = document.getElementById("export-selection");
+    if (!exportButton) return;
+
+    const selectedIds = () => boxes
+      .filter(box => box.checked)
+      .map(box => box.dataset.exportBook);
+
+    const updateButton = () => {
+      const count = selectedIds().length;
+      exportButton.disabled = count === 0;
+      if (selectionNote) {
+        selectionNote.textContent = count
+          ? `${count} book${count === 1 ? "" : "s"} selected.`
+          : "Tick books to publish a reading website.";
+      }
+    };
+
+    boxes.forEach(box => box.addEventListener("change", updateButton));
+    updateButton();
+    exportButton.addEventListener("click", exportLibrarySite);
+  }
+
+  async function exportLibrarySite() {
+    const result = document.getElementById("export-result");
+    const ids = [...document.querySelectorAll("[data-export-book]:checked")]
+      .map(box => box.dataset.exportBook);
+    if (!ids.length) return;
+    const exportButton = document.getElementById("export-site");
+    exportButton.disabled = true;
+    result.innerHTML = inlineMessage("Building the website…");
+    try {
+      const data = await api("/api/library/export-site", {
+        method: "POST",
+        body: json({ book_ids: ids }),
+      });
+      const skipped = Array.isArray(data.skipped) && data.skipped.length
+        ? `<p class="muted">Skipped: ${data.skipped
+            .map(item => `${escapeHtml(item[0])} (${escapeHtml(item[1])})`)
+            .join(", ")}</p>`
+        : "";
+      const warnings = Array.isArray(data.warnings) && data.warnings.length
+        ? data.warnings
+            .map(item => `<p class="muted">${escapeHtml(item[0])}: ${escapeHtml(item[1])}</p>`)
+            .join("")
+        : "";
+      result.innerHTML = `<div class="inline-message" role="status">
+        Website exported: ${Number(data.books)} book${
+          Number(data.books) === 1 ? "" : "s"
+        }, ${Number(data.chapters)} chapter${
+          Number(data.chapters) === 1 ? "" : "s"
+        }.
+        <button class="button" data-open-site="${escapeHtml(data.folder)}">Open folder</button>
+        ${skipped}
+        ${warnings}
+      </div>`;
+      document.querySelector("[data-open-site]")?.addEventListener("click", async () => {
+        try {
+          await api(
+            `/api/library/sites/${encodeURIComponent(data.folder)}/open`,
+            { method: "POST" },
+          );
+        } catch (error) {
+          content.insertAdjacentHTML("afterbegin", inlineMessage(error.message, true));
+        }
+      });
+    } catch (error) {
+      result.innerHTML = inlineMessage(error.message, true);
+    } finally {
+      exportButton.disabled = false;
+    }
   }
 
   async function renderLibraryBook(route) {

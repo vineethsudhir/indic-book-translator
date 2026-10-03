@@ -20,18 +20,24 @@ from typing import Annotated, Callable
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from ..edition_check import edition_notes, edition_payload
 from ..epub_check import check_source_epub
-from ..epub_io import load_epub_chapters, read_epub_metadata
+from ..epub_io import load_epub_chapters
 from ..importer import build_epub, import_html, import_text
 from ..inline_markup import strip_markers
+from ..library import book_metadata as _book_metadata
+from ..library import book_outputs as _book_outputs
+from ..library import metadata as _metadata
+from ..library import source_titles as _source_titles
 from ..pipeline import PipelineComponents, RunOptions, RunResult, output_file_names
+from ..site_export import export_site
 from .book_queue import BookQueue, ItemNotFound, ItemRunning, StateError
-from .paths import books_dir, data_dir, outputs_dir
+from .paths import books_dir, data_dir, outputs_dir, sites_dir
 from .runner import BookRun
 from .settings import (
     KNOWN_KEYS,
@@ -142,11 +148,6 @@ def _requirements(settings: AppSettings, audiobook: bool) -> tuple[list[str], li
         [name for name in key_names if not os.environ.get(name)],
         [name for name in module_names if not statuses.get(name, False)],
     )
-
-
-def _metadata(path: Path) -> tuple[str, str]:
-    title, author = read_epub_metadata(path)
-    return title or path.stem, author or "Unknown author"
 
 
 def _book_response(dest: Path) -> dict:
@@ -377,89 +378,6 @@ def _on_queue_item_finished(
     _queue_advance(app)
 
 
-def _source_epub(folder: Path, manifest: dict) -> Path | None:
-    """Find a source EPUB from the manifest, then the app's uploaded books."""
-    source_name = Path(str(manifest.get("epub", ""))).name
-    candidates = []
-    if manifest.get("epub"):
-        candidates.append(Path(manifest["epub"]))
-    if source_name:
-        candidates.append(books_dir() / source_name)
-    candidates.append(books_dir() / f"{folder.name}.epub")
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def _source_titles(folder: Path, manifest: dict) -> dict[str, str]:
-    source = _source_epub(folder, manifest)
-    if source is None:
-        return {}
-    try:
-        return {
-            chapter.id: chapter.title or chapter.id
-            for chapter in load_epub_chapters(source, exclude_ids=[])
-        }
-    except Exception:
-        return {}
-
-
-def _book_outputs(folder: Path, manifest: dict) -> dict:
-    """Output file names and translation coverage for one book folder.
-
-    Manifests written before previews were labelled lack "preview" and
-    "paragraphs_total"; for those the total is counted from the source EPUB,
-    so an old preview isn't presented as a finished book.
-    """
-    stem = Path(manifest.get("epub", folder.name)).stem
-    chapters = manifest.get("chapters", [])
-    translated = int(manifest.get("paragraphs_translated", sum(c.get("paragraphs", 0) for c in chapters)))
-    total = manifest.get("paragraphs_total")
-    if total is None:
-        total = translated
-        source = _source_epub(folder, manifest)
-        if source is not None:
-            try:
-                wanted = {c.get("id") for c in chapters}
-                # Older manifests have no "preview"/"paragraphs_total", but a
-                # run that skipped sections records the exclude_ids it ran
-                # with. Prefer those over today's global setting, so a skipped
-                # chapter still present in the source isn't counted as work
-                # the finished book never intended to do.
-                recorded = manifest.get("exclude_ids")
-                exclude_ids = recorded if isinstance(recorded, list) else load_settings().exclude_ids
-                source_chapters = load_epub_chapters(source, exclude_ids=exclude_ids)
-                total = sum(len(c.paragraphs) for c in source_chapters if c.id in wanted) or translated
-            except Exception:
-                pass
-    preview = bool(manifest.get("preview", translated < total))
-    target_language = str(manifest.get("target_language") or "kn")
-    epub_name, audio_name = output_file_names(stem, preview, target_language)
-    # Older runs always wrote .kn.* names; fall back to them when present.
-    if not (folder / epub_name).is_file() and (folder / f"{stem}.kn.epub").is_file():
-        epub_name = f"{stem}.kn.epub"
-    if not (folder / audio_name).is_file() and (folder / f"{stem}.kn.wav").is_file():
-        audio_name = f"{stem}.kn.wav"
-    return {
-        "epub": epub_name,
-        "audiobook": audio_name,
-        "preview": preview,
-        "paragraphs_translated": translated,
-        "paragraphs_total": total,
-    }
-
-
-def _book_metadata(folder: Path, manifest: dict) -> tuple[str, str]:
-    source = _source_epub(folder, manifest)
-    if source is not None:
-        try:
-            return _metadata(source)
-        except Exception:
-            pass
-    return folder.name, "Unknown author"
-
-
 def _safe_book_dir(book_id: str) -> Path:
     if not book_id or book_id in {".", ".."} or "/" in book_id or "\\" in book_id:
         raise HTTPException(404, "Book not found")
@@ -471,6 +389,37 @@ def _safe_book_dir(book_id: str) -> Path:
     if target is None or not (target / "manifest.json").is_file():
         raise HTTPException(404, "Book not found")
     return target
+
+
+def _safe_site_dir(name: str) -> Path:
+    """Resolve a site folder name against the real ``sites`` listing, or 404."""
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise HTTPException(404, "Exported site not found")
+    root = sites_dir()
+    target = next(
+        (
+            path
+            for path in root.iterdir()
+            if path.name == name and path.is_dir() and not path.is_symlink()
+        ),
+        None,
+    )
+    if target is None:
+        raise HTTPException(404, "Exported site not found")
+    return target
+
+
+def _open_path(target: Path) -> None:
+    """Open a folder or file in the OS file manager/reader."""
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        elif sys.platform == "win32":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except OSError as exc:
+        raise HTTPException(500, f"Could not open this item: {exc}") from exc
 
 
 def _qa_summary(folder: Path) -> dict | None:
@@ -1010,15 +959,49 @@ def create_app(
                 raise HTTPException(404, "Translated EPUB not found")
         else:
             raise HTTPException(400, 'Choose "folder" or "epub".')
+        _open_path(target)
+        return {"opened": True}
+
+    @app.post("/api/library/export-site", dependencies=[Depends(require_token)])
+    async def export_library_site(request: Request):
         try:
-            if sys.platform == "darwin":
-                subprocess.Popen(["open", str(target)])
-            elif sys.platform == "win32":
-                os.startfile(str(target))  # type: ignore[attr-defined]
-            else:
-                subprocess.Popen(["xdg-open", str(target)])
-        except OSError as exc:
-            raise HTTPException(500, f"Could not open this item: {exc}") from exc
+            payload = await request.json()
+        except ValueError as exc:
+            raise HTTPException(400, "Expected book ids as a JSON object.") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "Expected book ids as a JSON object.")
+        book_ids = payload.get("book_ids")
+        if not isinstance(book_ids, list) or not book_ids:
+            raise HTTPException(400, "Choose at least one book to export.")
+        if len(book_ids) > 200:
+            raise HTTPException(400, "Choose at most 200 books to export.")
+        if not all(isinstance(book_id, str) for book_id in book_ids):
+            raise HTTPException(400, "Each book id must be text.")
+        folders = [_safe_book_dir(book_id) for book_id in dict.fromkeys(book_ids)]
+
+        base = datetime.now().strftime("site-%Y%m%d-%H%M%S")
+        dest = sites_dir() / base
+        suffix = 2
+        while dest.exists():
+            dest = sites_dir() / f"{base}-{suffix}"
+            suffix += 1
+        try:
+            result = await run_in_threadpool(export_site, folders, dest)
+        except Exception as exc:  # noqa: BLE001 — no half-written site is kept
+            raise HTTPException(
+                500, "The website could not be exported."
+            ) from exc
+        return {
+            "folder": dest.name,
+            "books": result.books,
+            "chapters": result.chapters,
+            "skipped": [list(item) for item in result.skipped],
+            "warnings": [list(item) for item in result.warnings],
+        }
+
+    @app.post("/api/library/sites/{name}/open", dependencies=[Depends(require_token)])
+    async def open_site(name: str):
+        _open_path(_safe_site_dir(name))
         return {"opened": True}
 
     return app

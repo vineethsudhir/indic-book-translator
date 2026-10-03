@@ -581,6 +581,85 @@ def test_api() -> None:
     )
 
 
+def test_site_export_api() -> None:
+    """Export the Library as a static site, and validate the open endpoint."""
+    from fastapi.testclient import TestClient
+
+    from kannada_epub.app.paths import sites_dir
+    from kannada_epub.app.server import create_app
+
+    root = outputs_dir()
+    for name in ("site-export-a", "site-export-b"):
+        folder = root / name
+        (folder / "chapters").mkdir(parents=True, exist_ok=True)
+        (folder / "chapters" / "c1.json").write_text(
+            json.dumps({
+                "batches": [{
+                    "paragraph_start": 0,
+                    "source_english": ["Hello."],
+                    "edited_kannada": ["ನಮಸ್ಕಾರ."],
+                    "edited_emotions": [None],
+                }]
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        (folder / "book.kn.epub").write_bytes(b"PK\x03\x04fake")
+        (folder / "manifest.json").write_text(
+            json.dumps({
+                "epub": "book.epub",
+                "preview": False,
+                "paragraphs_translated": 1,
+                "paragraphs_total": 1,
+                "chapters": [{"id": "c1", "title": "One", "paragraphs": 1}],
+                "target_language": "kn",
+            }),
+            encoding="utf-8",
+        )
+
+    app = create_app()
+    token = app.state.app_token
+    headers = {"Host": "127.0.0.1:7860"}
+    authed = {**headers, "X-App-Token": token}
+    with TestClient(app) as client:
+        # The token is required.
+        assert client.post(
+            "/api/library/export-site",
+            headers=headers,
+            json={"book_ids": ["site-export-a"]},
+        ).status_code in (401, 403)
+
+        # An empty list and an unknown id are refused.
+        assert client.post(
+            "/api/library/export-site", headers=authed, json={"book_ids": []}
+        ).status_code == 400
+        assert client.post(
+            "/api/library/export-site", headers=authed, json={"book_ids": ["nope"]}
+        ).status_code == 404
+
+        # Two valid books export; the response never leaks an absolute path.
+        response = client.post(
+            "/api/library/export-site",
+            headers=authed,
+            json={"book_ids": ["site-export-a", "site-export-b"]},
+        )
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["books"] == 2, data
+        assert data["chapters"] == 2, data
+        assert data["skipped"] == [], data
+        assert data["folder"] and "/" not in data["folder"], data
+        assert str(DATA_DIR) not in response.text
+        assert (sites_dir() / data["folder"] / "index.html").is_file()
+
+        # The open endpoint only accepts names from the real sites listing.
+        assert client.post(
+            "/api/library/sites/nope/open", headers=authed
+        ).status_code == 404
+        assert client.post(
+            "/api/library/sites/..%2F..%2Fetc/open", headers=authed
+        ).status_code == 404
+
+
 def check_cloud_only_server() -> None:
     """Import the API module and construct its app with local libraries blocked."""
     src = str(ROOT / "src")
@@ -629,6 +708,7 @@ def main() -> None:
         test_secrets()
         test_runner(load_settings())
         test_api()
+        test_site_export_api()
         check_cloud_only_server()
     finally:
         import shutil

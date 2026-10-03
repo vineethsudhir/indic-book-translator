@@ -606,6 +606,18 @@ label.field-label {
 .library-row .actions {
   flex: none;
 }
+.book-select {
+  flex: none;
+  display: flex;
+  align-items: center;
+  padding: 4px;
+  cursor: pointer;
+}
+.book-select input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
 .queue-row {
   display: flex;
   align-items: center;
